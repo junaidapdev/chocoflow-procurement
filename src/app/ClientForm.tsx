@@ -82,6 +82,7 @@ export default function ClientForm() {
     register,
     handleSubmit,
     watch,
+    reset,
     formState: { errors },
   } = useForm<FormData>({
     resolver: zodResolver(schema),
@@ -149,6 +150,7 @@ export default function ClientForm() {
       }
       
       clearDraft();
+      reset();
       setIsSuccess(true);
     } catch (error) {
       console.error('Submission error:', error);
