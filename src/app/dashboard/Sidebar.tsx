@@ -6,7 +6,7 @@ import { usePathname, useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
 import { FileText, CheckSquare, CreditCard, Building2, LogOut, Menu, X } from 'lucide-react';
 
-export default function Sidebar({ profile }: { profile: any }) {
+export default function Sidebar({ profile }: { profile: { role: string; full_name?: string; email?: string } }) {
   const pathname = usePathname();
   const router = useRouter();
   const [mobileOpen, setMobileOpen] = useState(false);

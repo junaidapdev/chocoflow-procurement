@@ -82,7 +82,6 @@ export default function ClientForm() {
     register,
     handleSubmit,
     watch,
-    reset,
     formState: { errors },
   } = useForm<FormData>({
     resolver: zodResolver(schema),
