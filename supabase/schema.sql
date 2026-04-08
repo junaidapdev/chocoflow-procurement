@@ -1,0 +1,183 @@
+-- Create updated_at function if it doesn't exist
+CREATE OR REPLACE FUNCTION update_updated_at_column()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_at = now();
+    RETURN NEW;
+END;
+$$ language 'plpgsql';
+
+-- Create invoices table
+CREATE TABLE IF NOT EXISTS public.invoices (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    brand_name TEXT NOT NULL,
+    branch_id TEXT NOT NULL,
+    invoice_number TEXT NOT NULL,
+    invoice_date DATE NOT NULL,
+    amount DECIMAL(10,2) NOT NULL,
+    invoice_url TEXT,
+    receipt_url TEXT,
+    status TEXT DEFAULT 'Pending' CHECK (status IN ('Pending', 'Verified', 'Rejected', 'Approved', 'Paid')),
+    rejection_comment TEXT,
+    vendor_name TEXT,
+    vendor_email TEXT,
+    created_at TIMESTAMPTZ DEFAULT now(),
+    updated_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- Trigger for updated_at on invoices
+CREATE TRIGGER update_invoices_updated_at
+    BEFORE UPDATE ON public.invoices
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at_column();
+
+-- Create profiles table
+CREATE TABLE IF NOT EXISTS public.profiles (
+    id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
+    role TEXT CHECK (role IN ('amin', 'salam', 'accountant')),
+    full_name TEXT,
+    email TEXT,
+    created_at TIMESTAMPTZ DEFAULT now(),
+    updated_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- Trigger for updated_at on profiles
+CREATE TRIGGER update_profiles_updated_at
+    BEFORE UPDATE ON public.profiles
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at_column();
+
+-- Function to handle new user signups
+CREATE OR REPLACE FUNCTION public.handle_new_user() 
+RETURNS TRIGGER AS $$
+BEGIN
+  INSERT INTO public.profiles (id, email, full_name, role)
+  VALUES (NEW.id, NEW.email, NEW.raw_user_meta_data->>'full_name', null);
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Trigger to automatically create a profile for new users
+CREATE OR REPLACE TRIGGER on_auth_user_created
+  AFTER INSERT ON auth.users
+  FOR EACH ROW EXECUTE PROCEDURE public.handle_new_user();
+
+-- Add RLS to invoices
+ALTER TABLE public.invoices ENABLE ROW LEVEL SECURITY;
+
+-- Policy: Anyone can insert invoices (for public vendor submission)
+CREATE POLICY "Anyone can insert invoices" 
+    ON public.invoices FOR INSERT 
+    WITH CHECK (true);
+
+-- Policy: Only authenticated users can read invoices
+CREATE POLICY "Authenticated users can select invoices" 
+    ON public.invoices FOR SELECT 
+    USING (auth.role() = 'authenticated');
+
+-- Policy: Only authenticated users can update invoices
+CREATE POLICY "Authenticated users can update invoices" 
+    ON public.invoices FOR UPDATE 
+    USING (auth.role() = 'authenticated');
+
+-- Add RLS to profiles
+ALTER TABLE public.profiles ENABLE ROW LEVEL SECURITY;
+
+-- Policy: Authenticated users can read profiles
+CREATE POLICY "Authenticated users can select profiles"
+    ON public.profiles FOR SELECT
+    USING (auth.role() = 'authenticated');
+
+-- Policy: Authenticated users can update profiles
+CREATE POLICY "Authenticated users can update profiles"
+    ON public.profiles FOR UPDATE
+    USING (auth.role() = 'authenticated');
+
+-- Storage Configuration
+-- Note: Requires superuser/supabase_admin permissions if run outside Supabase SQL editor.
+-- Assuming buckets do not exist yet.
+
+INSERT INTO storage.buckets (id, name, public) VALUES ('invoices', 'invoices', false) ON CONFLICT (id) DO NOTHING;
+INSERT INTO storage.buckets (id, name, public) VALUES ('receipts', 'receipts', false) ON CONFLICT (id) DO NOTHING;
+
+-- Storage policies for invoices bucket (Authenticated users can read/write, anonymous can upload)
+CREATE POLICY "Anyone can upload to invoices bucket"
+    ON storage.objects FOR INSERT
+    WITH CHECK (bucket_id = 'invoices');
+
+CREATE POLICY "Authenticated users can read invoices bucket"
+    ON storage.objects FOR SELECT
+    USING (bucket_id = 'invoices' AND auth.role() = 'authenticated');
+
+CREATE POLICY "Authenticated users can update/delete invoices bucket"
+    ON storage.objects FOR UPDATE
+    USING (bucket_id = 'invoices' AND auth.role() = 'authenticated');
+CREATE POLICY "Authenticated users can delete from invoices bucket"
+    ON storage.objects FOR DELETE
+    USING (bucket_id = 'invoices' AND auth.role() = 'authenticated');
+
+-- Storage policies for receipts bucket
+CREATE POLICY "Anyone can upload to receipts bucket"
+    ON storage.objects FOR INSERT
+    WITH CHECK (bucket_id = 'receipts');
+
+CREATE POLICY "Authenticated users can read receipts bucket"
+    ON storage.objects FOR SELECT
+    USING (bucket_id = 'receipts' AND auth.role() = 'authenticated');
+
+CREATE POLICY "Authenticated users can update/delete receipts bucket"
+    ON storage.objects FOR UPDATE
+    USING (bucket_id = 'receipts' AND auth.role() = 'authenticated');
+    USING (bucket_id = 'receipts' AND auth.role() = 'authenticated');
+
+-- Create brands table
+CREATE TABLE IF NOT EXISTS public.brands (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    brand_name TEXT UNIQUE NOT NULL,
+    contact_name TEXT,
+    whatsapp_number TEXT,
+    created_at TIMESTAMPTZ DEFAULT now(),
+    updated_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- Trigger for updated_at on brands
+CREATE TRIGGER update_brands_updated_at
+    BEFORE UPDATE ON public.brands
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at_column();
+
+-- Add RLS to brands
+ALTER TABLE public.brands ENABLE ROW LEVEL SECURITY;
+
+-- Policy: Anyone can select brands
+CREATE POLICY "Anyone can select brands"
+    ON public.brands FOR SELECT
+    USING (true);
+
+-- Policy: Admins can update brands
+CREATE POLICY "Admins can update brands"
+    ON public.brands FOR UPDATE
+    USING (
+        auth.uid() IN (SELECT id FROM profiles WHERE role IN ('amin', 'salam'))
+    );
+CREATE POLICY "Admins can insert brands"
+    ON public.brands FOR INSERT
+    WITH CHECK (
+        auth.uid() IN (SELECT id FROM profiles WHERE role IN ('amin', 'salam'))
+    );
+
+-- Function to cascade brand_name updates to invoices table
+CREATE OR REPLACE FUNCTION public.cascade_brand_name_update()
+RETURNS TRIGGER AS $$
+BEGIN
+    IF NEW.brand_name <> OLD.brand_name THEN
+        UPDATE public.invoices SET brand_name = NEW.brand_name WHERE brand_name = OLD.brand_name;
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Trigger to cascade
+CREATE TRIGGER on_brand_name_update
+    AFTER UPDATE ON public.brands
+    FOR EACH ROW EXECUTE FUNCTION public.cascade_brand_name_update();
