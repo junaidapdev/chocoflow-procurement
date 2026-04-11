@@ -16,16 +16,8 @@ export default function Home() {
               priority
             />
           </div>
-          <div className="w-full bg-white border-b border-gray-100 py-4 text-center z-10 shadow-sm relative">
-            <p className="text-gray-500 text-sm font-bold tracking-widest uppercase">Vendor Portal</p>
-          </div>
         </div>
-        <div className="p-8 sm:p-10">
-          <div className="mb-8 text-center">
-            <h2 className="text-2xl font-bold text-gray-900">Submit Invoice</h2>
-            <p className="text-gray-500 text-sm mt-2">Please provide the details below to submit your invoice for processing.</p>
-          </div>
-          
+        <div className="pb-8 sm:pb-10">
           <ClientForm />
         </div>
       </div>
