@@ -14,7 +14,6 @@ const FORM_STORAGE_KEY = 'chocoflow_vendor_form_draft';
 
 const schema = z.object({
   vendorName: z.string().min(2, 'Vendor name is required'),
-  vendorEmail: z.string().email('Valid email is required'),
   brandName: z.string().min(1, 'Brand is required'),
   branch: z.string().min(1, 'Branch is required'),
   invoiceNumber: z.string().min(1, 'Invoice number is required'),
@@ -36,7 +35,7 @@ const schema = z.object({
 type FormData = z.infer<typeof schema>;
 
 // Fields we persist to localStorage (everything except file)
-const PERSISTABLE_FIELDS = ['vendorName', 'vendorEmail', 'brandName', 'branch', 'invoiceNumber', 'invoiceDate', 'amount'] as const;
+const PERSISTABLE_FIELDS = ['vendorName', 'brandName', 'branch', 'invoiceNumber', 'invoiceDate', 'amount'] as const;
 type PersistableField = typeof PERSISTABLE_FIELDS[number];
 
 export default function ClientForm() {
@@ -136,7 +135,7 @@ export default function ClientForm() {
       formData.append('invoice_date', data.invoiceDate);
       formData.append('amount', data.amount);
       formData.append('vendor_name', data.vendorName);
-      formData.append('vendor_email', data.vendorEmail);
+      formData.append('vendor_email', 'N/A');
 
       const res = await fetch('/api/invoices', {
         method: 'POST',
@@ -204,17 +203,7 @@ export default function ClientForm() {
           {errors.vendorName && <p className="text-xs text-red-500 mt-1">{errors.vendorName.message}</p>}
         </div>
 
-        {/* Vendor Email */}
-        <div className="space-y-2">
-          <label className="text-sm font-semibold text-gray-700">Vendor Email</label>
-          <input 
-            type="email"
-            {...register('vendorEmail')}
-            className={`w-full px-4 py-3 rounded-xl border text-gray-900 bg-gray-50/50 focus:bg-white transition-colors focus:outline-none focus:ring-2 ${errors.vendorEmail ? 'border-red-500 focus:ring-red-200' : 'border-gray-200 focus:border-yellow-400 focus:ring-yellow-100'}`}
-            placeholder="vendor@company.com"
-          />
-          {errors.vendorEmail && <p className="text-xs text-red-500 mt-1">{errors.vendorEmail.message}</p>}
-        </div>
+
 
         {/* Brand */}
         <div className="space-y-2">
