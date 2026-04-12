@@ -12,6 +12,38 @@ const MAX_FILE_SIZE = 5 * 1024 * 1024; // 5MB
 const ACCEPTED_FILE_TYPES = ['application/pdf'];
 const FORM_STORAGE_KEY = 'chocoflow_vendor_form_draft';
 
+// Map Arabic brand names to safe English ASCII folder names for the storage bucket
+const BRAND_FOLDER_MAP: Record<string, string> = {
+  "شنده": "Shunde",
+  "رولز": "Rols",
+  "المذاق الحجاز": "Al Mazaq Al Hijaz",
+  "فليك": "Fleek",
+  "المذاق العربي": "Al Mazaq Al Arabi",
+  "شرقي": "Sharqi",
+  "بيرلين": "Berlin",
+  "زماني": "Zamani",
+  "البحره الدمشقية": "Al Bahra Al Dimashqiya",
+  "رهش": "Rahsh",
+  "فيلان": "Faylan",
+  "كحيله": "Kaheela",
+  "زاد شرق": "Zad Sharq",
+  "لافيره": "Laviere",
+  "بايت": "Byte",
+  "ميراه سويت": "Mirah Sweet",
+  "باقة الاصاله": "Baqat Al Asala",
+  "خليج حلا": "Khaleej Hala",
+  "ارينا": "Arena",
+  "دلع مذاق": "Dala Mazaq",
+  "الما": "Alma",
+  "سنابل رهف": "Sanabel Rahaf",
+  "بوكودور": "Bouquet Dor",
+  "حميده": "Humaida",
+  "نخبة كيك": "Nukhbat Cake",
+  "السيوف": "Al Suyouf",
+  "مرابج الخليج": "Marabej Al Khaleej",
+  "لوثيره": "Luthira",
+};
+
 const schema = z.object({
   vendorName: z.string().min(2, 'Vendor name is required'),
   brandName: z.string().min(1, 'Brand is required'),
@@ -151,8 +183,10 @@ export default function ClientForm() {
     
     try {
       const file = data.invoicePdf[0];
-      const fileExt = file.name.split('.').pop();
-      const filePath = `${data.brandName}/${data.invoiceNumber}.${fileExt}`;
+      const fileExt = file.name.split('.').pop() || 'pdf';
+      
+      const storageFolderName = BRAND_FOLDER_MAP[data.brandName] || encodeURIComponent(data.brandName);
+      const filePath = `${storageFolderName}/${data.invoiceNumber}.${fileExt}`;
       
       const formData = new FormData();
       formData.append('file', file);
