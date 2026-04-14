@@ -28,7 +28,7 @@ const BRAND_FOLDER_MAP: Record<string, string> = {
   "كحيله": "Kaheela",
   "زاد شرق": "Zad Sharq",
   "لافيره": "Laviere",
-  "بايت": "Byte",
+  "بايت كرانشي": "Byte",
   "ميراه سويت": "Mirah Sweet",
   "باقة الاصاله": "Baqat Al Asala",
   "خليج حلا": "Khaleej Hala",
@@ -72,7 +72,7 @@ type PersistableField = typeof PERSISTABLE_FIELDS[number];
 
 export default function ClientForm() {
   const [lang, setLang] = useState<'ar' | 'en'>('ar');
-  
+
   const t = {
     vendorPortal: lang === 'en' ? 'VENDOR PORTAL' : 'بوابة الموردين',
     submitInvoiceTitle: lang === 'en' ? 'Submit Invoice' : 'تقديم فاتورة',
@@ -102,7 +102,7 @@ export default function ClientForm() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isSuccess, setIsSuccess] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
-  
+
   const [brands, setBrands] = useState<{ id: string, brand_name: string }[]>([]);
   const [isLoadingBrands, setIsLoadingBrands] = useState(true);
 
@@ -124,7 +124,7 @@ export default function ClientForm() {
           .from('brands')
           .select('id, brand_name')
           .order('brand_name', { ascending: true });
-          
+
         if (!error && data) {
           setBrands(data);
         }
@@ -136,7 +136,7 @@ export default function ClientForm() {
     }
     fetchBrands();
   }, []);
-  
+
   const {
     register,
     handleSubmit,
@@ -150,7 +150,7 @@ export default function ClientForm() {
 
   // Persist form data to localStorage on every change
   const watchedFields = watch(PERSISTABLE_FIELDS as unknown as PersistableField[]);
-  
+
   const saveToLocalStorage = useCallback(() => {
     try {
       const draft: Record<string, string> = {};
@@ -180,14 +180,14 @@ export default function ClientForm() {
   const onSubmit = async (data: FormData) => {
     setIsSubmitting(true);
     setSubmitError(null);
-    
+
     try {
       const file = data.invoicePdf[0];
       const fileExt = file.name.split('.').pop() || 'pdf';
-      
+
       const storageFolderName = BRAND_FOLDER_MAP[data.brandName] || encodeURIComponent(data.brandName);
       const filePath = `${storageFolderName}/${data.invoiceNumber}.${fileExt}`;
-      
+
       const formData = new FormData();
       formData.append('file', file);
       formData.append('filePath', filePath);
@@ -209,7 +209,7 @@ export default function ClientForm() {
       if (!res.ok) {
         throw new Error(result.error || 'Upload failed');
       }
-      
+
       clearDraft();
       reset();
       setIsSuccess(true);
@@ -231,7 +231,7 @@ export default function ClientForm() {
           <h3 className="text-2xl font-bold text-gray-900">{t.successTitle}</h3>
           <p className="text-lg text-gray-600">{t.successDesc}</p>
         </div>
-        <button 
+        <button
           onClick={() => {
             setIsSuccess(false);
             window.location.reload();
@@ -248,14 +248,14 @@ export default function ClientForm() {
     <div className="flex flex-col w-full">
       <div className="w-full bg-white border-b border-gray-100 py-4 px-6 flex justify-between items-center z-10 shadow-sm relative group" dir={lang === 'ar' ? 'rtl' : 'ltr'}>
         <p className="text-gray-500 text-sm font-bold tracking-widest uppercase">{t.vendorPortal}</p>
-        <button 
+        <button
           onClick={() => setLang(lang === 'en' ? 'ar' : 'en')}
           className="text-xs font-bold bg-gray-50 hover:bg-gray-100 text-gray-700 px-3 py-1.5 rounded-lg transition-colors border border-gray-200 shadow-sm outline-none"
         >
           {lang === 'en' ? 'عربي' : 'EN'}
         </button>
       </div>
-      
+
       <div className="p-8 sm:p-10" dir={lang === 'ar' ? 'rtl' : 'ltr'}>
         <div className="mb-8 text-center">
           <h2 className="text-2xl font-bold text-gray-900">{t.submitInvoiceTitle}</h2>
@@ -274,7 +274,7 @@ export default function ClientForm() {
             {/* Vendor Name */}
             <div className="space-y-2">
               <label className="text-sm font-semibold text-gray-700 block">{t.vendorName}</label>
-              <input 
+              <input
                 {...register('vendorName')}
                 className={`w-full px-4 py-3 rounded-xl border text-gray-900 bg-gray-50/50 focus:bg-white transition-colors focus:outline-none focus:ring-2 ${errors.vendorName ? 'border-red-500 focus:ring-red-200' : 'border-gray-200 focus:border-yellow-400 focus:ring-yellow-100'}`}
                 placeholder={t.vendorNamePlaceholder}
@@ -287,7 +287,7 @@ export default function ClientForm() {
             {/* Brand */}
             <div className="space-y-2">
               <label className="text-sm font-semibold text-gray-700 block">{t.brandName}</label>
-              <select 
+              <select
                 {...register('brandName')}
                 className={`w-full px-4 py-3 rounded-xl border text-gray-900 bg-gray-50/50 focus:bg-white transition-colors focus:outline-none focus:ring-2 ${errors.brandName ? 'border-red-500 focus:ring-red-200' : 'border-gray-200 focus:border-yellow-400 focus:ring-yellow-100'}`}
               >
@@ -302,7 +302,7 @@ export default function ClientForm() {
             {/* Branch */}
             <div className="space-y-2">
               <label className="text-sm font-semibold text-gray-700 block">{t.branch}</label>
-              <select 
+              <select
                 {...register('branch')}
                 className={`w-full px-4 py-3 rounded-xl border text-gray-900 bg-gray-50/50 focus:bg-white transition-colors focus:outline-none focus:ring-2 ${errors.branch ? 'border-red-500 focus:ring-red-200' : 'border-gray-200 focus:border-yellow-400 focus:ring-yellow-100'}`}
               >
@@ -317,7 +317,7 @@ export default function ClientForm() {
             {/* Invoice Number */}
             <div className="space-y-2">
               <label className="text-sm font-semibold text-gray-700 block">{t.invoiceNumber}</label>
-              <input 
+              <input
                 {...register('invoiceNumber')}
                 className={`w-full px-4 py-3 rounded-xl border text-gray-900 bg-gray-50/50 focus:bg-white transition-colors focus:outline-none focus:ring-2 ${errors.invoiceNumber ? 'border-red-500 focus:ring-red-200' : 'border-gray-200 focus:border-yellow-400 focus:ring-yellow-100'}`}
                 placeholder={t.invoiceNumberPlaceholder}
@@ -328,7 +328,7 @@ export default function ClientForm() {
             {/* Invoice Date */}
             <div className="space-y-2">
               <label className="text-sm font-semibold text-gray-700 block">{t.invoiceDate}</label>
-              <input 
+              <input
                 type="date"
                 {...register('invoiceDate')}
                 className={`w-full px-4 py-3 rounded-xl border text-gray-900 bg-gray-50/50 focus:bg-white transition-colors focus:outline-none focus:ring-2 ${errors.invoiceDate ? 'border-red-500 focus:ring-red-200' : 'border-gray-200 focus:border-yellow-400 focus:ring-yellow-100'}`}
@@ -341,7 +341,7 @@ export default function ClientForm() {
               <label className="text-sm font-semibold text-gray-700 block">{t.amount}</label>
               <div className="relative">
                 <span className="absolute start-4 top-3.5 text-gray-400 font-medium text-sm">{t.amountPrefix}</span>
-                <input 
+                <input
                   type="number"
                   step="0.01"
                   min="0.01"
@@ -358,7 +358,7 @@ export default function ClientForm() {
           <div className="space-y-2 pt-2">
             <label className="text-sm font-semibold text-gray-700 block">{t.pdfLabel}</label>
             <div className={`relative border-2 border-dashed rounded-2xl p-8 transition-colors ${errors.invoicePdf ? 'border-red-300 bg-red-50' : selectedFile ? 'border-yellow-400 bg-yellow-50/30' : 'border-gray-200 hover:border-yellow-400 bg-gray-50/50 hover:bg-yellow-50/30'}`}>
-              <input 
+              <input
                 type="file"
                 accept="application/pdf"
                 {...register('invoicePdf')}
@@ -384,35 +384,35 @@ export default function ClientForm() {
                       <p className="text-sm font-semibold text-gray-900">{t.pdfClick}</p>
                       <p className="text-xs text-gray-500 mt-1">{t.pdfOnly}</p>
                     </div>
-              </>
+                  </>
+                )}
+              </div>
+            </div>
+            {errors.invoicePdf && (
+              <p className="text-xs text-red-500 mt-1 flex items-center">
+                {errors.invoicePdf.message as string}
+              </p>
             )}
           </div>
-        </div>
-        {errors.invoicePdf && (
-          <p className="text-xs text-red-500 mt-1 flex items-center">
-            {errors.invoicePdf.message as string}
-          </p>
-        )}
-      </div>
 
-      <div className="pt-6">
-        <button
-          type="submit"
-          disabled={isSubmitting}
-          className="w-full relative overflow-hidden bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-4 px-6 rounded-xl transition-all disabled:opacity-70 disabled:cursor-not-allowed shadow-none active:scale-[0.98]"
-        >
-          {isSubmitting ? (
-            <span className="flex items-center justify-center">
-              <Loader2 className="w-5 h-5 mr-2 animate-spin" />
-              {t.uploading}
-            </span>
-          ) : (
-            t.submitBtn
-          )}
-        </button>
+          <div className="pt-6">
+            <button
+              type="submit"
+              disabled={isSubmitting}
+              className="w-full relative overflow-hidden bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-4 px-6 rounded-xl transition-all disabled:opacity-70 disabled:cursor-not-allowed shadow-none active:scale-[0.98]"
+            >
+              {isSubmitting ? (
+                <span className="flex items-center justify-center">
+                  <Loader2 className="w-5 h-5 mr-2 animate-spin" />
+                  {t.uploading}
+                </span>
+              ) : (
+                t.submitBtn
+              )}
+            </button>
+          </div>
+        </form>
       </div>
-    </form>
-    </div>
     </div>
   );
 }
