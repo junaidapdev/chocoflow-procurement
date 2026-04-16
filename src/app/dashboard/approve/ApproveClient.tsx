@@ -17,7 +17,26 @@ type Invoice = {
   vendor_name: string;
   created_at: string;
   updated_at: string;
+  type?: 'invoice' | 'return';
 };
+
+const TypeCell = ({ type }: { type?: string }) => {
+  if (type === 'return') {
+    return (
+      <span className="inline-flex items-center gap-1 text-xs font-bold px-2.5 py-1 rounded-md bg-rose-100 text-rose-800 border border-rose-300 whitespace-nowrap">
+        ↩ Return Bill
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center text-xs font-medium px-2.5 py-1 rounded-md bg-gray-100 text-gray-500 whitespace-nowrap">
+      Invoice
+    </span>
+  );
+};
+
+const signedAmount = (inv: { type?: string; amount: number }) =>
+  (inv.type === 'return' ? -1 : 1) * Number(inv.amount);
 
 export default function ApproveClient({ initialInvoices }: { initialInvoices: Invoice[] }) {
   const [invoices, setInvoices] = useState<Invoice[]>(initialInvoices);
@@ -45,22 +64,23 @@ export default function ApproveClient({ initialInvoices }: { initialInvoices: In
   const approvedCount = invoices.filter(inv => inv.status === 'Approved').length;
   const paidCount = invoices.filter(inv => inv.status === 'Paid').length;
 
+  // Net-aware totals: returns subtract from the outstanding balance
   const totalOutstanding = useMemo(() => {
     return invoices
       .filter(inv => inv.status === 'Verified' || inv.status === 'Approved')
-      .reduce((sum, inv) => sum + Number(inv.amount), 0);
+      .reduce((sum, inv) => sum + signedAmount(inv), 0);
   }, [invoices]);
 
   const brandSummary = useMemo(() => {
     const validInvoices = invoices.filter(inv => inv.status === 'Verified' || inv.status === 'Approved');
     const summary: Record<string, { count: number, total: number }> = {};
-    
+
     validInvoices.forEach(inv => {
       if (!summary[inv.brand_name]) summary[inv.brand_name] = { count: 0, total: 0 };
       summary[inv.brand_name].count += 1;
-      summary[inv.brand_name].total += Number(inv.amount);
+      summary[inv.brand_name].total += signedAmount(inv);
     });
-    
+
     return Object.entries(summary).sort((a, b) => b[1].total - a[1].total);
   }, [invoices]);
 
@@ -181,9 +201,10 @@ export default function ApproveClient({ initialInvoices }: { initialInvoices: In
                       </button>
                     </th>
                   )}
+                  <th className="px-6 py-4">Type</th>
                   <th className="px-6 py-4">Vendor</th>
                   <th className="px-6 py-4">Brand/Branch</th>
-                  <th className="px-6 py-4">Invoice #</th>
+                  <th className="px-6 py-4">Ref #</th>
                   <th className="px-6 py-4">Amount (SAR)</th>
                   <th className="px-6 py-4">Status Updated</th>
                   <th className="px-6 py-4 text-center">Action</th>
@@ -197,27 +218,34 @@ export default function ApproveClient({ initialInvoices }: { initialInvoices: In
                     </td>
                   </tr>
                 ) : (
-                  queueToDisplay.map((inv) => (
-                    <tr key={inv.id} className={`transition-colors ${selectedIds.has(inv.id) ? 'bg-indigo-50/50' : 'hover:bg-gray-50'}`}>
+                  queueToDisplay.map((inv) => {
+                    const isReturn = inv.type === 'return';
+                    const isSelected = selectedIds.has(inv.id);
+                    return (
+                    <tr key={inv.id} className={`transition-colors ${isSelected ? 'bg-indigo-50/50' : isReturn ? 'bg-rose-50/40 hover:bg-rose-50' : 'hover:bg-gray-50'}`}>
                       {activeFilter === 'Verified' && (
                         <td className="px-4 py-4 text-center">
-                          <button onClick={() => toggleSelect(inv.id)} className={`${selectedIds.has(inv.id) ? 'text-indigo-600' : 'text-gray-300 hover:text-indigo-400'} transition-colors`}>
-                            {selectedIds.has(inv.id) ? <CheckSquare className="w-5 h-5" /> : <Square className="w-5 h-5" />}
+                          <button onClick={() => toggleSelect(inv.id)} className={`${isSelected ? 'text-indigo-600' : 'text-gray-300 hover:text-indigo-400'} transition-colors`}>
+                            {isSelected ? <CheckSquare className="w-5 h-5" /> : <Square className="w-5 h-5" />}
                           </button>
                         </td>
                       )}
+                      <td className="px-6 py-4">
+                        <TypeCell type={inv.type} />
+                      </td>
                       <td className="px-6 py-4 font-medium text-gray-900">{inv.vendor_name}</td>
                       <td className="px-6 py-4">
-                        <div className="font-semibold">{inv.brand_name}</div>
+                        <div className="font-semibold text-gray-900">{inv.brand_name}</div>
                         <div className="text-gray-500 text-xs">{inv.branch_id}</div>
                       </td>
-                      <td className="px-6 py-4 text-gray-600">
-                        <button onClick={() => openSecureDocument(inv.invoice_url, 'invoices')} className="flex items-center hover:text-indigo-600 hover:underline cursor-pointer">
+                      <td className="px-6 py-4">
+                        <button onClick={() => openSecureDocument(inv.invoice_url, 'invoices')} className={`flex items-center hover:underline cursor-pointer font-mono text-xs ${isReturn ? 'text-rose-600 hover:text-rose-800' : 'text-gray-600 hover:text-indigo-600'}`}>
                           <FileText className="w-3.5 h-3.5 mr-1" />
                           {inv.invoice_number}
                         </button>
                       </td>
-                      <td className="px-6 py-4 font-bold text-gray-900">
+                      <td className={`px-6 py-4 font-bold ${isReturn ? 'text-rose-700' : 'text-gray-900'}`}>
+                        {isReturn && <span className="mr-0.5 opacity-70">−</span>}
                         {inv.amount.toLocaleString(undefined, { minimumFractionDigits: 2 })}
                       </td>
                       <td className="px-6 py-4 text-gray-500 text-xs">
@@ -239,7 +267,7 @@ export default function ApproveClient({ initialInvoices }: { initialInvoices: In
                         )}
                       </td>
                     </tr>
-                  ))
+                  );})
                 )}
               </tbody>
             </table>
@@ -252,26 +280,37 @@ export default function ApproveClient({ initialInvoices }: { initialInvoices: In
                 No invoices currently in the {activeFilter} state.
               </div>
             ) : (
-              queueToDisplay.map((inv) => (
-                <div key={inv.id} className={`p-4 space-y-3 ${selectedIds.has(inv.id) ? 'bg-indigo-50/50' : ''}`}>
+              queueToDisplay.map((inv) => {
+                const isReturn = inv.type === 'return';
+                const isSelected = selectedIds.has(inv.id);
+                return (
+                <div key={inv.id} className={`space-y-3 ${isSelected ? 'bg-indigo-50/50' : isReturn ? 'bg-rose-50/40' : ''}`}>
+                  {isReturn && (
+                    <div className="bg-rose-100 border-b border-rose-200 px-4 py-1.5">
+                      <span className="text-xs font-bold text-rose-800 uppercase tracking-wider">↩ Return Bill</span>
+                    </div>
+                  )}
+                  <div className="px-4 pt-2 pb-4 space-y-3">
                   <div className="flex items-start justify-between">
                     <div className="flex items-start gap-3">
                       {activeFilter === 'Verified' && (
-                        <button onClick={() => toggleSelect(inv.id)} className={`mt-0.5 ${selectedIds.has(inv.id) ? 'text-indigo-600' : 'text-gray-300'}`}>
-                          {selectedIds.has(inv.id) ? <CheckSquare className="w-5 h-5" /> : <Square className="w-5 h-5" />}
+                        <button onClick={() => toggleSelect(inv.id)} className={`mt-0.5 ${isSelected ? 'text-indigo-600' : 'text-gray-300'}`}>
+                          {isSelected ? <CheckSquare className="w-5 h-5" /> : <Square className="w-5 h-5" />}
                         </button>
                       )}
                       <div>
                         <p className="font-semibold text-gray-900">{inv.vendor_name}</p>
-                        <p className="text-xs text-gray-500">{inv.brand_name} • {inv.branch_id}</p>
+                        <p className="text-xs text-gray-900 font-medium">{inv.brand_name}</p>
+                        <p className="text-xs text-gray-500">{inv.branch_id}</p>
                       </div>
                     </div>
-                    <span className="text-lg font-bold text-gray-900 whitespace-nowrap">
+                    <span className={`text-lg font-bold whitespace-nowrap ${isReturn ? 'text-rose-700' : 'text-gray-900'}`}>
+                      {isReturn && <span className="text-sm mr-0.5">−</span>}
                       {inv.amount.toLocaleString(undefined, { minimumFractionDigits: 2 })} <span className="text-xs text-gray-500 font-normal">SAR</span>
                     </span>
                   </div>
                   <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-gray-500">
-                    <button onClick={() => openSecureDocument(inv.invoice_url, 'invoices')} className="flex items-center text-indigo-600">
+                    <button onClick={() => openSecureDocument(inv.invoice_url, 'invoices')} className={`flex items-center ${isReturn ? 'text-rose-600' : 'text-indigo-600'}`}>
                       <FileText className="w-3 h-3 mr-1" />{inv.invoice_number}
                     </button>
                     <span>Updated {format(new Date(inv.updated_at), 'MMM dd, p')}</span>
@@ -291,8 +330,9 @@ export default function ApproveClient({ initialInvoices }: { initialInvoices: In
                       </span>
                     )}
                   </div>
+                  </div>
                 </div>
-              ))
+              );})
             )}
           </div>
         </div>

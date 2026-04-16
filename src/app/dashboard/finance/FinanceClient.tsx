@@ -20,6 +20,7 @@ type Invoice = {
   vendor_email: string;
   created_at: string;
   updated_at?: string;
+  type?: 'invoice' | 'return';
 };
 
 type BrandRecord = {
@@ -28,9 +29,18 @@ type BrandRecord = {
   whatsapp_number: string | null;
 };
 
-export default function FinanceClient({ initialInvoices, brands }: { initialInvoices: Invoice[], brands: BrandRecord[] }) {
+export default function FinanceClient({
+  initialInvoices,
+  initialReturns,
+  brands,
+}: {
+  initialInvoices: Invoice[];
+  initialReturns: Invoice[];
+  brands: BrandRecord[];
+}) {
   const [invoices, setInvoices] = useState<Invoice[]>(initialInvoices);
-  const [activeTab, setActiveTab] = useState<'To Pay' | 'History'>('To Pay');
+  const [availableReturns, setAvailableReturns] = useState<Invoice[]>(initialReturns);
+  const [activeTab, setActiveTab] = useState<'To Pay' | 'Credits' | 'History'>('To Pay');
   
   const [vendorSentIds, setVendorSentIds] = useState<Set<string>>(() => {
     if (typeof window !== 'undefined') {
@@ -61,6 +71,36 @@ export default function FinanceClient({ initialInvoices, brands }: { initialInvo
   const [receiptFile, setReceiptFile] = useState<File | null>(null);
   const [fileError, setFileError] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
+  const [selectedReturnIds, setSelectedReturnIds] = useState<Set<string>>(new Set());
+
+  // Returns available for the invoice currently being paid (matched by brand)
+  const applicableReturns = useMemo(() => {
+    if (!invoiceToPay) return [] as Invoice[];
+    return availableReturns.filter(r => r.brand_name === invoiceToPay.brand_name);
+  }, [invoiceToPay, availableReturns]);
+
+  const totalReturnCredit = useMemo(() => {
+    return applicableReturns
+      .filter(r => selectedReturnIds.has(r.id))
+      .reduce((sum, r) => sum + Number(r.amount), 0);
+  }, [applicableReturns, selectedReturnIds]);
+
+  const netPayable = invoiceToPay
+    ? Math.max(0, Number(invoiceToPay.amount) - totalReturnCredit)
+    : 0;
+
+  const creditExceedsInvoice = invoiceToPay
+    ? totalReturnCredit > Number(invoiceToPay.amount)
+    : false;
+
+  const toggleReturnSelection = (id: string) => {
+    setSelectedReturnIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
 
   const openSecureDocument = async (pathOrUrl: string, bucket: string) => {
     let path = pathOrUrl;
@@ -81,9 +121,15 @@ export default function FinanceClient({ initialInvoices, brands }: { initialInvo
   const paidInvoices = invoices.filter(inv => inv.status === 'Paid');
   const toPayCount = toPayInvoices.length;
 
-  const totalOutstanding = useMemo(() => {
-    return toPayInvoices.reduce((sum, inv) => sum + Number(inv.amount), 0);
-  }, [toPayInvoices]);
+  const totalInvoicesOutstanding = useMemo(
+    () => toPayInvoices.reduce((sum, inv) => sum + Number(inv.amount), 0),
+    [toPayInvoices]
+  );
+
+  const totalReturnCredits = useMemo(
+    () => availableReturns.reduce((sum, r) => sum + Number(r.amount), 0),
+    [availableReturns]
+  );
 
   const exportToCsv = () => {
     if (paidInvoices.length === 0) {
@@ -125,6 +171,7 @@ export default function FinanceClient({ initialInvoices, brands }: { initialInvo
     setInvoiceToPay(invoice);
     setReceiptFile(null);
     setFileError('');
+    setSelectedReturnIds(new Set());
     setPayModalOpen(true);
   };
 
@@ -211,10 +258,15 @@ Kayan Sweets Team`;
       const fileExt = receiptFile.name.split('.').pop();
       const filePath = `${invoiceToPay.id}/receipt.${fileExt}`;
 
+      const appliedIds = Array.from(selectedReturnIds);
+
       const formData = new FormData();
       formData.append('file', receiptFile);
       formData.append('filePath', filePath);
       formData.append('invoiceId', invoiceToPay.id);
+      if (appliedIds.length > 0) {
+        formData.append('appliedReturnIds', JSON.stringify(appliedIds));
+      }
 
       const res = await fetch('/api/receipts', {
         method: 'POST',
@@ -232,11 +284,16 @@ Kayan Sweets Team`;
       await notifyVendor(invoiceToPay.id);
 
       // UI Update — invoice is now confirmed Paid on the server
-      setInvoices(current => current.map(inv => 
-        inv.id === invoiceToPay.id 
+      setInvoices(current => current.map(inv =>
+        inv.id === invoiceToPay.id
           ? { ...inv, status: 'Paid', receipt_url: result.publicUrl }
           : inv
       ));
+
+      // Remove consumed returns from the available pool
+      if (appliedIds.length > 0) {
+        setAvailableReturns(current => current.filter(r => !selectedReturnIds.has(r.id)));
+      }
 
       setPayModalOpen(false);
     } catch (err) {
@@ -251,27 +308,46 @@ Kayan Sweets Team`;
     <div className="space-y-6">
       
       {/* Top Banner */}
-      <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 flex flex-col md:flex-row md:items-center justify-between">
-        <div className="flex items-center text-emerald-800">
-          <div className="w-14 h-14 bg-emerald-100 rounded-full flex items-center justify-center mr-4">
-            <CreditCard className="w-7 h-7 text-emerald-600" />
+      <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 flex flex-col md:flex-row md:items-center justify-between gap-4">
+        {/* Invoices outstanding */}
+        <div className="flex items-center">
+          <div className="w-12 h-12 bg-emerald-100 rounded-full flex items-center justify-center mr-4 shrink-0">
+            <CreditCard className="w-6 h-6 text-emerald-600" />
           </div>
           <div>
-            <h2 className="text-gray-500 font-medium text-sm tracking-wide uppercase">Total Approved Outstanding</h2>
-            <div className="flex items-baseline space-x-2 mt-1">
-              <span className="text-4xl font-extrabold text-gray-900 tracking-tight">
-                {totalOutstanding.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+            <h2 className="text-gray-500 font-medium text-xs tracking-wide uppercase">Invoices to Pay</h2>
+            <div className="flex items-baseline space-x-1.5 mt-0.5">
+              <span className="text-3xl font-extrabold text-gray-900 tracking-tight">
+                {totalInvoicesOutstanding.toLocaleString(undefined, { minimumFractionDigits: 2 })}
               </span>
-              <span className="text-gray-500 font-semibold">SAR</span>
+              <span className="text-gray-500 font-semibold text-sm">SAR</span>
             </div>
+            <span className="text-xs text-gray-400">{toPayCount} invoice{toPayCount !== 1 ? 's' : ''} in queue</span>
           </div>
         </div>
 
-        <div className="mt-4 md:mt-0 flex items-center gap-4">
-          <div className="flex flex-col md:text-right">
-            <span className="text-sm font-semibold text-gray-800">{toPayCount} Invoices in Queue</span>
-            <span className="text-xs text-gray-500">Oldest outstanding prioritized (FIFO)</span>
+        {/* Divider */}
+        <div className="hidden md:block w-px h-14 bg-gray-200" />
+
+        {/* Return credits */}
+        <div className="flex items-center">
+          <div className="w-12 h-12 bg-rose-100 rounded-full flex items-center justify-center mr-4 shrink-0">
+            <ArrowUpRight className="w-6 h-6 text-rose-500 rotate-180" />
           </div>
+          <div>
+            <h2 className="text-gray-500 font-medium text-xs tracking-wide uppercase">Return Credits Available</h2>
+            <div className="flex items-baseline space-x-1.5 mt-0.5">
+              <span className="text-3xl font-extrabold text-rose-600 tracking-tight">
+                {totalReturnCredits.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+              </span>
+              <span className="text-rose-400 font-semibold text-sm">SAR</span>
+            </div>
+            <span className="text-xs text-gray-400">{availableReturns.length} pending credit{availableReturns.length !== 1 ? 's' : ''}</span>
+          </div>
+        </div>
+
+        {/* Export */}
+        <div className="md:ml-auto">
           <button
             onClick={exportToCsv}
             className="inline-flex items-center gap-2 px-4 py-2.5 bg-gray-900 hover:bg-gray-800 text-white text-sm font-semibold rounded-xl transition-colors shadow-sm whitespace-nowrap"
@@ -299,6 +375,17 @@ Kayan Sweets Team`;
             )}
           </button>
           <button
+            onClick={() => setActiveTab('Credits')}
+            className={`px-6 py-4 text-sm font-semibold flex items-center border-b-2 transition-colors ${activeTab === 'Credits' ? 'border-rose-500 text-rose-700 bg-white' : 'border-transparent text-gray-500 hover:text-gray-700 hover:bg-gray-50'}`}
+          >
+            Return Credits
+            {availableReturns.length > 0 && (
+              <span className="ml-2 bg-rose-100 text-rose-700 py-0.5 px-2.5 rounded-full text-xs">
+                {availableReturns.length}
+              </span>
+            )}
+          </button>
+          <button
             onClick={() => setActiveTab('History')}
             className={`px-6 py-4 text-sm font-semibold flex items-center border-b-2 transition-colors ${activeTab === 'History' ? 'border-gray-900 text-gray-900 bg-white' : 'border-transparent text-gray-500 hover:text-gray-700 hover:bg-gray-50'}`}
           >
@@ -306,6 +393,118 @@ Kayan Sweets Team`;
           </button>
         </div>
 
+        {/* ── Credits Tab ── */}
+        {activeTab === 'Credits' && (
+          <>
+            {/* Credits info banner */}
+            <div className="px-6 py-3 bg-rose-50/60 border-b border-rose-100 text-xs text-rose-700 flex items-center gap-2">
+              <span className="font-semibold">How credits work:</span>
+              When you pay an invoice, any approved return credits for the same brand will appear in the payment modal for you to apply. The credit reduces the net amount you actually transfer.
+            </div>
+
+            {/* Desktop */}
+            <div className="overflow-x-auto hidden lg:block">
+              <table className="w-full text-left text-sm whitespace-nowrap">
+                <thead className="bg-white text-gray-500 font-medium border-b border-gray-100 uppercase text-xs tracking-wider">
+                  <tr>
+                    <th className="px-6 py-4">Vendor</th>
+                    <th className="px-6 py-4">Brand / Branch</th>
+                    <th className="px-6 py-4">Return Ref No.</th>
+                    <th className="px-6 py-4">Date</th>
+                    <th className="px-6 py-4 text-right">Credit Amount (SAR)</th>
+                    <th className="px-6 py-4 text-center">Return Bill</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  {availableReturns.length === 0 ? (
+                    <tr>
+                      <td colSpan={6} className="px-6 py-16 text-center text-gray-400">
+                        <div className="flex flex-col items-center">
+                          <CreditCard className="w-8 h-8 text-gray-300 mb-2" />
+                          <p>No return credits available.</p>
+                        </div>
+                      </td>
+                    </tr>
+                  ) : (
+                    availableReturns.map((r) => (
+                      <tr key={r.id} className="bg-rose-50/30 hover:bg-rose-50/60 transition-colors">
+                        <td className="px-6 py-4">
+                          <div className="font-semibold text-gray-900">{r.vendor_name}</div>
+                        </td>
+                        <td className="px-6 py-4 text-gray-800">
+                          <span className="font-medium mr-2">{r.brand_name}</span>
+                          <span className="text-xs text-gray-400">({r.branch_id})</span>
+                        </td>
+                        <td className="px-6 py-4 font-mono text-xs text-rose-700">{r.invoice_number}</td>
+                        <td className="px-6 py-4 text-gray-600">{format(new Date(r.invoice_date), 'MMM dd, yyyy')}</td>
+                        <td className="px-6 py-4 text-right">
+                          <span className="font-bold text-rose-700">
+                            −{Number(r.amount).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                          </span>
+                          <span className="text-xs text-gray-400 ml-1">SAR</span>
+                        </td>
+                        <td className="px-6 py-4 text-center">
+                          {r.invoice_url ? (
+                            <button
+                              onClick={() => openSecureDocument(r.invoice_url, 'invoices')}
+                              className="inline-flex items-center text-rose-600 hover:text-rose-800 font-medium text-xs bg-rose-50 px-3 py-1.5 rounded-full transition-colors"
+                            >
+                              <FileText className="w-3.5 h-3.5 mr-1.5" />
+                              View PDF
+                            </button>
+                          ) : (
+                            <span className="text-gray-400 text-xs italic">No PDF</span>
+                          )}
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Mobile */}
+            <div className="lg:hidden divide-y divide-gray-100">
+              {availableReturns.length === 0 ? (
+                <div className="px-4 py-16 text-center text-gray-400">
+                  <CreditCard className="w-8 h-8 text-gray-300 mb-2 mx-auto" />
+                  <p>No return credits available.</p>
+                </div>
+              ) : (
+                availableReturns.map((r) => (
+                  <div key={r.id} className="p-4 bg-rose-50/30 space-y-3">
+                    <div className="flex items-start justify-between">
+                      <div>
+                        <h3 className="font-bold text-gray-900">{r.vendor_name}</h3>
+                        <p className="text-xs text-gray-500 mt-0.5">{r.brand_name} • {r.branch_id}</p>
+                        <p className="text-xs font-mono text-rose-600 mt-0.5">{r.invoice_number}</p>
+                      </div>
+                      <div className="text-right">
+                        <span className="text-lg font-bold text-rose-700">
+                          −{Number(r.amount).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                        </span>
+                        <span className="text-xs text-gray-400 ml-1">SAR</span>
+                      </div>
+                    </div>
+                    <div className="text-xs text-gray-500">{format(new Date(r.invoice_date), 'MMM dd, yyyy')}</div>
+                    {r.invoice_url && (
+                      <button
+                        onClick={() => openSecureDocument(r.invoice_url, 'invoices')}
+                        className="inline-flex items-center text-rose-600 font-medium text-xs bg-rose-50 px-3 py-1.5 rounded-full"
+                      >
+                        <FileText className="w-3 h-3 mr-1" /> View Return PDF
+                      </button>
+                    )}
+                  </div>
+                ))
+              )}
+            </div>
+          </>
+        )}
+
+        {/* ── To Pay / History Tabs ── */}
+        {activeTab !== 'Credits' && (
+        <>
         {/* Desktop Table */}
         <div className="overflow-x-auto hidden lg:block">
           <table className="w-full text-left text-sm whitespace-nowrap">
@@ -521,6 +720,8 @@ Kayan Sweets Team`;
             ))
           )}
         </div>
+        </>
+        )}
       </div>
 
       {/* Payment Modal */}
@@ -547,12 +748,81 @@ Kayan Sweets Team`;
                     <p className="text-emerald-700 text-sm font-mono mt-0.5">#{invoiceToPay.invoice_number}</p>
                   </div>
                   <div className="text-right">
-                    <p className="text-emerald-800 text-xs uppercase font-bold tracking-wider mb-1">Settle Amount</p>
+                    <p className="text-emerald-800 text-xs uppercase font-bold tracking-wider mb-1">Invoice Amount</p>
                     <p className="text-emerald-900 font-black text-xl">
                       {invoiceToPay.amount.toLocaleString(undefined, { minimumFractionDigits: 2 })}
                     </p>
                   </div>
                 </div>
+
+                {/* Return Credits (if any available for this brand) */}
+                {applicableReturns.length > 0 && (
+                  <div className="bg-rose-50/70 rounded-lg p-4 border border-rose-100 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <p className="text-rose-800 text-xs uppercase font-bold tracking-wider">Apply Return Credits</p>
+                      <span className="text-[10px] font-semibold text-rose-600 bg-white border border-rose-200 rounded-full px-2 py-0.5">
+                        {applicableReturns.length} available for {invoiceToPay.brand_name}
+                      </span>
+                    </div>
+                    <div className="space-y-2 max-h-40 overflow-y-auto">
+                      {applicableReturns.map(r => {
+                        const checked = selectedReturnIds.has(r.id);
+                        return (
+                          <label
+                            key={r.id}
+                            className={`flex items-center justify-between gap-3 px-3 py-2 rounded-md cursor-pointer border transition-colors ${checked ? 'bg-white border-rose-300 shadow-sm' : 'bg-white/50 border-rose-100 hover:bg-white'}`}
+                          >
+                            <div className="flex items-center gap-3">
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                onChange={() => toggleReturnSelection(r.id)}
+                                className="accent-rose-600 w-4 h-4"
+                              />
+                              <div className="min-w-0">
+                                <div className="text-xs font-semibold text-gray-900 truncate">#{r.invoice_number}</div>
+                                <div className="text-[11px] text-gray-500">
+                                  {format(new Date(r.invoice_date), 'MMM dd, yyyy')} • {r.vendor_name}
+                                </div>
+                              </div>
+                            </div>
+                            <div className="text-right shrink-0">
+                              <span className="text-sm font-bold text-rose-700">
+                                −{Number(r.amount).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                              </span>
+                              <span className="text-[10px] text-gray-500 ml-1">SAR</span>
+                            </div>
+                          </label>
+                        );
+                      })}
+                    </div>
+
+                    {selectedReturnIds.size > 0 && (
+                      <div className="pt-3 border-t border-rose-200 space-y-1">
+                        <div className="flex justify-between text-xs text-gray-600">
+                          <span>Invoice</span>
+                          <span className="font-mono">{Number(invoiceToPay.amount).toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                        </div>
+                        <div className="flex justify-between text-xs text-rose-700">
+                          <span>Returns applied</span>
+                          <span className="font-mono">−{totalReturnCredit.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                        </div>
+                        <div className="flex justify-between items-baseline pt-1 border-t border-rose-200">
+                          <span className="text-xs font-bold uppercase tracking-wider text-gray-800">Net Payable</span>
+                          <span className="text-lg font-black text-gray-900">
+                            {netPayable.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                            <span className="text-xs text-gray-500 font-normal ml-1">SAR</span>
+                          </span>
+                        </div>
+                        {creditExceedsInvoice && (
+                          <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded p-2 mt-2">
+                            Selected credits exceed the invoice amount. Deselect some returns — remaining credit will stay available for future invoices.
+                          </p>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
 
                 <div className="space-y-3 pt-2">
                   <label className="text-sm font-semibold text-gray-800">Bank Transfer Receipt (Isal) <span className="text-red-500">*</span></label>
@@ -604,7 +874,7 @@ Kayan Sweets Team`;
                 </button>
                 <button
                   type="submit"
-                  disabled={isProcessing || !receiptFile}
+                  disabled={isProcessing || !receiptFile || creditExceedsInvoice}
                   className="flex items-center px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold rounded-lg text-sm shadow-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {isProcessing ? (

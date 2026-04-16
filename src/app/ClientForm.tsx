@@ -14,9 +14,9 @@ const FORM_STORAGE_KEY = 'chocoflow_vendor_form_draft';
 
 // Map Arabic brand names to safe English ASCII folder names for the storage bucket
 const BRAND_FOLDER_MAP: Record<string, string> = {
-  "شنده": "Shunde",
+  "شنده": "Shunda",
   "رولز": "Rols",
-  "المذاق الحجاز": "Al Mazaq Al Hijaz",
+  "المذاق الحجاز": "Al Mazaq Al Hijazi",
   "فليك": "Fleek",
   "المذاق العربي": "Al Mazaq Al Arabi",
   "شرقي": "Sharqi",
@@ -28,7 +28,7 @@ const BRAND_FOLDER_MAP: Record<string, string> = {
   "كحيله": "Kaheela",
   "زاد شرق": "Zad Sharq",
   "لافيره": "Laviere",
-  "بايت كرانشي": "Byte",
+  "بايت كرانشي": "Bite",
   "ميراه سويت": "Mirah Sweet",
   "باقة الاصاله": "Baqat Al Asala",
   "خليج حلا": "Khaleej Hala",
@@ -72,30 +72,50 @@ type PersistableField = typeof PERSISTABLE_FIELDS[number];
 
 export default function ClientForm() {
   const [lang, setLang] = useState<'ar' | 'en'>('ar');
+  const [docType, setDocType] = useState<'invoice' | 'return'>('invoice');
+  const isReturn = docType === 'return';
 
   const t = {
     vendorPortal: lang === 'en' ? 'VENDOR PORTAL' : 'بوابة الموردين',
-    submitInvoiceTitle: lang === 'en' ? 'Submit Invoice' : 'تقديم فاتورة',
-    submitInvoiceDesc: lang === 'en' ? 'Please provide the details below to submit your invoice for processing.' : 'يرجى تقديم التفاصيل أدناه لتقديم فاتورتك للمعالجة.',
+    submitInvoiceTitle: isReturn
+      ? (lang === 'en' ? 'Submit Return Bill' : 'تقديم فاتورة إرجاع')
+      : (lang === 'en' ? 'Submit Invoice' : 'تقديم فاتورة'),
+    submitInvoiceDesc: isReturn
+      ? (lang === 'en' ? 'Please provide the details below to submit your return bill. The amount will be credited against your next invoice.' : 'يرجى تقديم التفاصيل أدناه لتقديم فاتورة الإرجاع. سيتم خصم المبلغ من فاتورتك التالية.')
+      : (lang === 'en' ? 'Please provide the details below to submit your invoice for processing.' : 'يرجى تقديم التفاصيل أدناه لتقديم فاتورتك للمعالجة.'),
+    typeToggleInvoice: lang === 'en' ? 'Invoice' : 'فاتورة',
+    typeToggleReturn: lang === 'en' ? 'Return Bill' : 'فاتورة إرجاع',
     vendorName: lang === 'en' ? 'Vendor Name' : 'اسم المورد',
     vendorNamePlaceholder: lang === 'en' ? 'e.g. Acme Corp' : 'مثال: شركة أكمي',
     brandName: lang === 'en' ? 'Brand Name' : 'اسم العلامة التجارية',
     brandPlaceholder: lang === 'en' ? 'Select a brand...' : 'اختر علامة تجارية...',
     branch: lang === 'en' ? 'Branch' : 'الفرع',
     branchPlaceholder: lang === 'en' ? 'Select a branch...' : 'اختر فرعاً...',
-    invoiceNumber: lang === 'en' ? 'Invoice Number' : 'رقم الفاتورة',
-    invoiceNumberPlaceholder: lang === 'en' ? 'INV-2024-001' : 'INV-2024-001',
-    invoiceDate: lang === 'en' ? 'Invoice Date' : 'تاريخ الفاتورة',
-    amount: lang === 'en' ? 'Invoice Amount (SAR)' : 'مبلغ الفاتورة (بالريال السعودي)',
+    invoiceNumber: isReturn
+      ? (lang === 'en' ? 'Return Bill Number' : 'رقم فاتورة الإرجاع')
+      : (lang === 'en' ? 'Invoice Number' : 'رقم الفاتورة'),
+    invoiceNumberPlaceholder: isReturn ? 'RET-2024-001' : 'INV-2024-001',
+    invoiceDate: isReturn
+      ? (lang === 'en' ? 'Return Date' : 'تاريخ الإرجاع')
+      : (lang === 'en' ? 'Invoice Date' : 'تاريخ الفاتورة'),
+    amount: isReturn
+      ? (lang === 'en' ? 'Return Amount (SAR)' : 'مبلغ الإرجاع (بالريال السعودي)')
+      : (lang === 'en' ? 'Invoice Amount (SAR)' : 'مبلغ الفاتورة (بالريال السعودي)'),
     amountPrefix: lang === 'en' ? 'SR' : 'ر.س',
-    pdfLabel: lang === 'en' ? 'Invoice PDF' : 'ملف الفاتورة (PDF)',
+    pdfLabel: isReturn
+      ? (lang === 'en' ? 'Return Bill PDF' : 'ملف فاتورة الإرجاع (PDF)')
+      : (lang === 'en' ? 'Invoice PDF' : 'ملف الفاتورة (PDF)'),
     pdfReady: lang === 'en' ? 'Ready to submit' : 'جاهز للتقديم',
     pdfClick: lang === 'en' ? 'Click to upload or drag and drop' : 'انقر للتحميل أو قم بالسحب والإفلات',
     pdfOnly: lang === 'en' ? 'PDF file only (max 5MB)' : 'ملف PDF فقط (بحد أقصى 5 ميجابايت)',
     uploading: lang === 'en' ? 'Uploading...' : 'جاري التحميل...',
-    submitBtn: lang === 'en' ? 'Submit Invoice' : 'إرسال الفاتورة',
-    successTitle: lang === 'en' ? 'Your invoice has been received' : 'تم استلام فاتورتك',
-    successDesc: lang === 'en' ? 'Thank you for submitting.' : 'شكراً لتقديمك الفاتورة بنجاح.',
+    submitBtn: isReturn
+      ? (lang === 'en' ? 'Submit Return Bill' : 'إرسال فاتورة الإرجاع')
+      : (lang === 'en' ? 'Submit Invoice' : 'إرسال الفاتورة'),
+    successTitle: isReturn
+      ? (lang === 'en' ? 'Your return bill has been received' : 'تم استلام فاتورة الإرجاع')
+      : (lang === 'en' ? 'Your invoice has been received' : 'تم استلام فاتورتك'),
+    successDesc: lang === 'en' ? 'Thank you for submitting.' : 'شكراً لتقديمك بنجاح.',
     submitAnother: lang === 'en' ? 'Submit Another' : 'تقديم أخرى',
   };
 
@@ -186,7 +206,8 @@ export default function ClientForm() {
       const fileExt = file.name.split('.').pop() || 'pdf';
 
       const storageFolderName = BRAND_FOLDER_MAP[data.brandName] || encodeURIComponent(data.brandName);
-      const filePath = `${storageFolderName}/${data.invoiceNumber}.${fileExt}`;
+      const subfolder = isReturn ? 'returns/' : '';
+      const filePath = `${storageFolderName}/${subfolder}${data.invoiceNumber}.${fileExt}`;
 
       const formData = new FormData();
       formData.append('file', file);
@@ -198,6 +219,7 @@ export default function ClientForm() {
       formData.append('amount', data.amount);
       formData.append('vendor_name', data.vendorName);
       formData.append('vendor_email', 'N/A');
+      formData.append('type', docType);
 
       const res = await fetch('/api/invoices', {
         method: 'POST',
@@ -257,6 +279,26 @@ export default function ClientForm() {
       </div>
 
       <div className="p-8 sm:p-10" dir={lang === 'ar' ? 'rtl' : 'ltr'}>
+        {/* Invoice / Return Toggle */}
+        <div className="mb-6 flex justify-center">
+          <div className="inline-flex bg-gray-100 rounded-xl p-1 border border-gray-200">
+            <button
+              type="button"
+              onClick={() => setDocType('invoice')}
+              className={`px-5 py-2 text-sm font-semibold rounded-lg transition-all ${docType === 'invoice' ? 'bg-white text-emerald-700 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
+            >
+              {t.typeToggleInvoice}
+            </button>
+            <button
+              type="button"
+              onClick={() => setDocType('return')}
+              className={`px-5 py-2 text-sm font-semibold rounded-lg transition-all ${docType === 'return' ? 'bg-white text-rose-700 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
+            >
+              {t.typeToggleReturn}
+            </button>
+          </div>
+        </div>
+
         <div className="mb-8 text-center">
           <h2 className="text-2xl font-bold text-gray-900">{t.submitInvoiceTitle}</h2>
           <p className="text-gray-500 text-sm mt-3 leading-relaxed max-w-lg mx-auto">{t.submitInvoiceDesc}</p>
@@ -399,7 +441,7 @@ export default function ClientForm() {
             <button
               type="submit"
               disabled={isSubmitting}
-              className="w-full relative overflow-hidden bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-4 px-6 rounded-xl transition-all disabled:opacity-70 disabled:cursor-not-allowed shadow-none active:scale-[0.98]"
+              className={`w-full relative overflow-hidden text-white font-bold py-4 px-6 rounded-xl transition-all disabled:opacity-70 disabled:cursor-not-allowed shadow-none active:scale-[0.98] ${isReturn ? 'bg-rose-600 hover:bg-rose-700' : 'bg-emerald-600 hover:bg-emerald-700'}`}
             >
               {isSubmitting ? (
                 <span className="flex items-center justify-center">

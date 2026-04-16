@@ -166,6 +166,23 @@ CREATE POLICY "Admins can insert brands"
         auth.uid() IN (SELECT id FROM profiles WHERE role IN ('amin', 'salam'))
     );
 
+-- ─────────────────────────────────────────────────────────────────────────────
+-- Returns support
+-- A "return" is a credit note from the vendor (they owe us money back).
+-- It flows through the same Pending → Verified → Approved pipeline as an
+-- invoice. When Finance pays an invoice, approved returns for the same
+-- brand can be applied to reduce the net payable amount. Once applied,
+-- the return's status becomes 'Paid' and applied_to_invoice_id links it
+-- to the invoice it reduced.
+-- ─────────────────────────────────────────────────────────────────────────────
+ALTER TABLE public.invoices
+    ADD COLUMN IF NOT EXISTS type TEXT NOT NULL DEFAULT 'invoice'
+        CHECK (type IN ('invoice', 'return')),
+    ADD COLUMN IF NOT EXISTS applied_to_invoice_id UUID REFERENCES public.invoices(id);
+
+CREATE INDEX IF NOT EXISTS idx_invoices_type_status ON public.invoices(type, status);
+CREATE INDEX IF NOT EXISTS idx_invoices_applied_to ON public.invoices(applied_to_invoice_id);
+
 -- Function to cascade brand_name updates to invoices table
 CREATE OR REPLACE FUNCTION public.cascade_brand_name_update()
 RETURNS TRIGGER AS $$

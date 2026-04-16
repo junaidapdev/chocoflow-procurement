@@ -17,6 +17,19 @@ export async function POST(request: NextRequest) {
     const file = formData.get('file') as File | null;
     const filePath = formData.get('filePath') as string;
     const invoiceId = formData.get('invoiceId') as string;
+    const appliedReturnIdsRaw = formData.get('appliedReturnIds') as string | null;
+
+    let appliedReturnIds: string[] = [];
+    if (appliedReturnIdsRaw) {
+      try {
+        const parsed = JSON.parse(appliedReturnIdsRaw);
+        if (Array.isArray(parsed)) {
+          appliedReturnIds = parsed.filter((x): x is string => typeof x === 'string');
+        }
+      } catch {
+        return NextResponse.json({ error: 'appliedReturnIds must be a JSON array of strings' }, { status: 400 });
+      }
+    }
 
     if (!file || !filePath || !invoiceId) {
       return NextResponse.json({ error: 'file, filePath, and invoiceId are required' }, { status: 400 });
@@ -64,6 +77,25 @@ export async function POST(request: NextRequest) {
         { error: `Payment could not be recorded. The receipt was not saved. Please try again. (${dbError.message})` },
         { status: 500 }
       );
+    }
+
+    // --- 4. Apply selected return credits (if any) ---
+    // The filters ensure we only consume returns that are still applicable:
+    // type='return', status='Approved', and not already applied to another invoice.
+    if (appliedReturnIds.length > 0) {
+      const { error: returnErr } = await supabaseAdmin
+        .from('invoices')
+        .update({ status: 'Paid', applied_to_invoice_id: invoiceId })
+        .in('id', appliedReturnIds)
+        .eq('type', 'return')
+        .eq('status', 'Approved')
+        .is('applied_to_invoice_id', null);
+
+      if (returnErr) {
+        // Invoice is already marked paid — log the issue but don't fail the request.
+        // Finance team can reconcile manually if this ever happens.
+        console.error('Failed to mark returns as applied:', returnErr);
+      }
     }
 
     return NextResponse.json({ success: true, publicUrl: urlData.publicUrl });

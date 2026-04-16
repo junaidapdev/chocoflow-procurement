@@ -23,6 +23,8 @@ export async function POST(request: NextRequest) {
     const amountRaw = formData.get('amount') as string;
     const vendor_name = formData.get('vendor_name') as string;
     const vendor_email = formData.get('vendor_email') as string;
+    const typeRaw = (formData.get('type') as string) || 'invoice';
+    const type = typeRaw === 'return' ? 'return' : 'invoice';
 
     // --- Validation ---
     if (!file || !filePath) {
@@ -42,18 +44,21 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Amount must be a positive number greater than zero.' }, { status: 400 });
     }
 
-    // --- Duplicate check ---
+    // --- Duplicate check (scoped by type, so an invoice and a return
+    // with the same number don't collide) ---
     const { data: existingInvoice } = await supabaseAdmin
       .from('invoices')
       .select('id')
       .eq('invoice_number', invoice_number)
       .eq('brand_name', brand_name)
+      .eq('type', type)
       .limit(1)
       .maybeSingle();
 
     if (existingInvoice) {
+      const label = type === 'return' ? 'return bill number' : 'invoice number';
       return NextResponse.json(
-        { error: 'This invoice number already exists for this brand. Please check and resubmit.' },
+        { error: `This ${label} already exists for this brand. Please check and resubmit.` },
         { status: 409 }
       );
     }
@@ -82,7 +87,8 @@ export async function POST(request: NextRequest) {
       invoice_url: filePath,
       vendor_name,
       vendor_email,
-      status: 'Pending'
+      status: 'Pending',
+      type,
     });
 
     if (dbError) {

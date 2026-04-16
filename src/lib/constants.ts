@@ -1,11 +1,11 @@
 
 
 export const BRANCHES = [
-  'Salama',
-  'Haramain',
-  'Sanabil',
-  'Obhur',
-  'Rusayfah',
-  'Awali',
-  'Madeena'
+  'السلامة',
+  'الحرمين',
+  'سنابل',
+  'أبحر',
+  'الرصيفة',
+  'العوالي',
+  'المدينة المنورة',
 ];

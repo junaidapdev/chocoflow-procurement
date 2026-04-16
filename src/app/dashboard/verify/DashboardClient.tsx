@@ -17,6 +17,22 @@ type Invoice = {
   vendor_name: string;
   rejection_comment: string | null;
   created_at: string;
+  type?: 'invoice' | 'return';
+};
+
+const TypeCell = ({ type }: { type?: string }) => {
+  if (type === 'return') {
+    return (
+      <span className="inline-flex items-center gap-1 text-[11px] font-bold px-2 py-0.5 rounded-md bg-rose-100 text-rose-800 border border-rose-300 whitespace-nowrap">
+        ↩ Return
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center text-[11px] font-medium px-2 py-0.5 rounded-md bg-gray-100 text-gray-500 whitespace-nowrap">
+      Invoice
+    </span>
+  );
 };
 
 export default function DashboardClient({ initialInvoices }: { initialInvoices: Invoice[] }) {
@@ -154,20 +170,21 @@ export default function DashboardClient({ initialInvoices }: { initialInvoices: 
         <table className="w-full text-left text-sm whitespace-nowrap">
           <thead className="bg-gray-50 text-gray-500 font-medium border-b border-gray-200 uppercase text-xs tracking-wider">
             <tr>
-              <th className="px-6 py-4">VENDOR</th>
-              <th className="px-6 py-4">BRAND / BRANCH</th>
-              <th className="px-6 py-4">INVOICE NO.</th>
-              <th className="px-6 py-4">DATE</th>
-              <th className="px-6 py-4 text-right">AMOUNT (SAR)</th>
-              <th className="px-6 py-4">SUBMITTED AT</th>
-              <th className="px-6 py-4">DOCUMENT</th>
-              <th className="px-6 py-4 text-center">ACTION</th>
+              <th className="px-3 py-4">TYPE</th>
+              <th className="px-4 py-4">VENDOR</th>
+              <th className="px-4 py-4">BRAND / BRANCH</th>
+              <th className="px-4 py-4">REF NO.</th>
+              <th className="px-4 py-4">DATE</th>
+              <th className="px-4 py-4 text-right">AMOUNT (SAR)</th>
+              <th className="px-4 py-4">SUBMITTED AT</th>
+              <th className="px-4 py-4">DOCUMENT</th>
+              <th className="px-4 py-4 text-center">ACTION</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-100">
             {filteredInvoices.length === 0 ? (
               <tr>
-                <td colSpan={8} className="px-6 py-12 text-center text-gray-500">
+                <td colSpan={9} className="px-6 py-12 text-center text-gray-500">
                   <div className="flex flex-col items-center justify-center">
                     <Check className="w-8 h-8 text-gray-300 mb-2" />
                     <p>No {activeTab.toLowerCase()} invoices found.</p>
@@ -175,32 +192,40 @@ export default function DashboardClient({ initialInvoices }: { initialInvoices: 
                 </td>
               </tr>
             ) : (
-              filteredInvoices.map((inv) => (
-                <tr key={inv.id} className="hover:bg-gray-50/50 transition-colors">
-                  <td className="px-6 py-4">
+              filteredInvoices.map((inv) => {
+                const isReturn = inv.type === 'return';
+                return (
+                <tr key={inv.id} className={`transition-colors ${isReturn ? 'bg-rose-50/50 hover:bg-rose-50' : 'hover:bg-gray-50/50'}`}>
+                  <td className="px-3 py-4">
+                    <TypeCell type={inv.type} />
+                  </td>
+                  <td className="px-4 py-4">
                     <div className="font-medium text-gray-900">{inv.vendor_name}</div>
                   </td>
-                  <td className="px-6 py-4">
+                  <td className="px-4 py-4">
                     <div className="font-medium text-gray-900">{inv.brand_name}</div>
                     <div className="text-gray-500 text-xs">{inv.branch_id}</div>
                   </td>
-                  <td className="px-6 py-4 text-gray-600 font-mono text-xs">{inv.invoice_number}</td>
-                  <td className="px-6 py-4 text-gray-600">
+                  <td className={`px-4 py-4 font-mono text-xs ${isReturn ? 'text-rose-700' : 'text-gray-600'}`}>
+                    {inv.invoice_number}
+                  </td>
+                  <td className="px-4 py-4 text-gray-600">
                     {format(new Date(inv.invoice_date), 'MMM dd, yyyy')}
                   </td>
-                  <td className="px-6 py-4 text-right">
-                    <div className="font-semibold text-gray-900">
+                  <td className="px-4 py-4 text-right">
+                    <div className={`font-semibold ${isReturn ? 'text-rose-700' : 'text-gray-900'}`}>
+                      {isReturn && <span className="mr-0.5 opacity-70">−</span>}
                       {inv.amount.toLocaleString(undefined, { minimumFractionDigits: 2 })}
                     </div>
                   </td>
-                  <td className="px-6 py-4 text-gray-500 text-xs">
+                  <td className="px-4 py-4 text-gray-500 text-xs">
                     {format(new Date(inv.created_at), 'MMM dd, p')}
                   </td>
-                  <td className="px-6 py-4">
+                  <td className="px-4 py-4">
                     {inv.invoice_url ? (
-                      <button 
+                      <button
                         onClick={() => openSecureDocument(inv.invoice_url, 'invoices')}
-                        className="inline-flex items-center text-amber-600 hover:text-amber-800 transition-colors font-medium text-xs bg-amber-50 px-3 py-1.5 rounded-full"
+                        className={`inline-flex items-center transition-colors font-medium text-xs px-3 py-1.5 rounded-full ${isReturn ? 'text-rose-700 hover:text-rose-900 bg-rose-50' : 'text-amber-600 hover:text-amber-800 bg-amber-50'}`}
                       >
                         <FileText className="w-3.5 h-3.5 mr-1.5" />
                         View PDF
@@ -209,13 +234,13 @@ export default function DashboardClient({ initialInvoices }: { initialInvoices: 
                       <span className="text-gray-400 text-xs italic">N/A</span>
                     )}
                   </td>
-                  <td className="px-6 py-4 text-center">
+                  <td className="px-4 py-4 text-center">
                     {activeTab === 'Pending' ? (
-                      <div className="flex justify-center space-x-2">
+                      <div className="flex flex-col items-center gap-1.5">
                         <button
                           onClick={() => handleVerify(inv.id)}
                           disabled={isProcessing === inv.id}
-                          className="flex items-center text-xs font-semibold px-4 py-1.5 bg-emerald-600 text-white hover:bg-emerald-700 rounded-md transition-colors disabled:opacity-50 shadow-sm"
+                          className="flex items-center justify-center text-xs font-semibold w-24 py-1.5 bg-emerald-600 text-white hover:bg-emerald-700 rounded-md transition-colors disabled:opacity-50 shadow-sm"
                         >
                           {isProcessing === inv.id ? <Loader2 className="w-3.5 h-3.5 animate-spin mr-1" /> : <Check className="w-3.5 h-3.5 mr-1" />}
                           Verify
@@ -223,7 +248,7 @@ export default function DashboardClient({ initialInvoices }: { initialInvoices: 
                         <button
                           onClick={() => openRejectModal(inv)}
                           disabled={isProcessing === inv.id}
-                          className="flex items-center text-xs font-semibold px-3 py-1.5 bg-red-50 text-red-700 border border-red-200 hover:bg-red-100 rounded-md transition-colors disabled:opacity-50"
+                          className="flex items-center justify-center text-xs font-semibold w-24 py-1.5 bg-red-50 text-red-700 border border-red-200 hover:bg-red-100 rounded-md transition-colors disabled:opacity-50"
                         >
                           <X className="w-3.5 h-3.5 mr-1" />
                           Reject
@@ -241,7 +266,7 @@ export default function DashboardClient({ initialInvoices }: { initialInvoices: 
                     )}
                   </td>
                 </tr>
-              ))
+              );})
             )}
           </tbody>
         </table>
@@ -255,19 +280,28 @@ export default function DashboardClient({ initialInvoices }: { initialInvoices: 
             <p>No {activeTab.toLowerCase()} invoices found.</p>
           </div>
         ) : (
-          filteredInvoices.map((inv) => (
-            <div key={inv.id} className="p-4 space-y-3">
+          filteredInvoices.map((inv) => {
+            const isReturn = inv.type === 'return';
+            return (
+            <div key={inv.id} className={`space-y-3 ${isReturn ? 'bg-rose-50/40' : ''}`}>
+              {isReturn && (
+                <div className="bg-rose-100 border-b border-rose-200 px-4 py-1.5 flex items-center gap-1.5">
+                  <span className="text-xs font-bold text-rose-800 uppercase tracking-wider">↩ Return Bill</span>
+                </div>
+              )}
+              <div className="px-4 pt-2 pb-4 space-y-3">
               <div className="flex items-start justify-between">
                 <div>
                   <p className="font-semibold text-gray-900">{inv.vendor_name}</p>
                   <p className="text-xs text-gray-500">{inv.brand_name} • {inv.branch_id}</p>
                 </div>
-                <span className="text-lg font-bold text-gray-900 whitespace-nowrap">
+                <span className={`text-lg font-bold whitespace-nowrap ${isReturn ? 'text-rose-700' : 'text-gray-900'}`}>
+                  {isReturn && <span className="text-sm mr-0.5">−</span>}
                   {inv.amount.toLocaleString(undefined, { minimumFractionDigits: 2 })} <span className="text-xs text-gray-500 font-normal">SAR</span>
                 </span>
               </div>
               <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-gray-500">
-                <span>Invoice: <span className="font-mono text-gray-700">{inv.invoice_number}</span></span>
+                <span>Ref: <span className={`font-mono ${isReturn ? 'text-rose-700' : 'text-gray-700'}`}>{inv.invoice_number}</span></span>
                 <span>{format(new Date(inv.invoice_date), 'MMM dd, yyyy')}</span>
                 <span>Submitted {format(new Date(inv.created_at), 'MMM dd, p')}</span>
               </div>
@@ -308,8 +342,9 @@ export default function DashboardClient({ initialInvoices }: { initialInvoices: 
                   </div>
                 )}
               </div>
+              </div>
             </div>
-          ))
+          );})
         )}
       </div>
 
