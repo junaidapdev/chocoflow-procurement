@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS public.invoices (
     amount DECIMAL(10,2) NOT NULL,
     invoice_url TEXT,
     receipt_url TEXT,
-    status TEXT DEFAULT 'Pending' CHECK (status IN ('Pending', 'Verified', 'Rejected', 'Approved', 'Paid')),
+    status TEXT DEFAULT 'Pending' CHECK (status IN ('Pending', 'Verified', 'Rejected', 'Approved', 'ReadyToPay', 'Paid')),
     rejection_comment TEXT,
     vendor_name TEXT,
     vendor_email TEXT,
@@ -34,7 +34,7 @@ CREATE TRIGGER update_invoices_updated_at
 -- Create profiles table
 CREATE TABLE IF NOT EXISTS public.profiles (
     id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
-    role TEXT CHECK (role IN ('amin', 'salam', 'accountant')),
+    role TEXT CHECK (role IN ('amin', 'salam', 'accountant', 'payer')),
     full_name TEXT,
     email TEXT,
     created_at TIMESTAMPTZ DEFAULT now(),
@@ -182,6 +182,26 @@ ALTER TABLE public.invoices
 
 CREATE INDEX IF NOT EXISTS idx_invoices_type_status ON public.invoices(type, status);
 CREATE INDEX IF NOT EXISTS idx_invoices_applied_to ON public.invoices(applied_to_invoice_id);
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- Payment authorization step
+-- Splits the old "Approved → Paid" transition into two:
+--   Approved        — manager has signed off; finance/accountant must authorize
+--   ReadyToPay      — accountant has authorized; payer must transfer + upload
+--   Paid            — payer has uploaded receipt
+-- The 'payer' role above owns the final step.
+-- ─────────────────────────────────────────────────────────────────────────────
+ALTER TABLE public.invoices
+    DROP CONSTRAINT IF EXISTS invoices_status_check;
+ALTER TABLE public.invoices
+    ADD CONSTRAINT invoices_status_check
+    CHECK (status IN ('Pending', 'Verified', 'Rejected', 'Approved', 'ReadyToPay', 'Paid'));
+
+ALTER TABLE public.profiles
+    DROP CONSTRAINT IF EXISTS profiles_role_check;
+ALTER TABLE public.profiles
+    ADD CONSTRAINT profiles_role_check
+    CHECK (role IN ('amin', 'salam', 'accountant', 'payer'));
 
 -- Function to cascade brand_name updates to invoices table
 CREATE OR REPLACE FUNCTION public.cascade_brand_name_update()

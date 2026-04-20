@@ -4,7 +4,7 @@ import { useState } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
-import { FileText, CheckSquare, CreditCard, Building2, LogOut, Menu, X } from 'lucide-react';
+import { FileText, CheckSquare, CreditCard, Building2, LogOut, Menu, X, Banknote } from 'lucide-react';
 
 export default function Sidebar({ profile }: { profile: { role: string; full_name?: string; email?: string } }) {
   const pathname = usePathname();
@@ -21,6 +21,7 @@ export default function Sidebar({ profile }: { profile: { role: string; full_nam
     { name: 'Verify Invoices', href: '/dashboard/verify', roles: ['amin'], icon: FileText },
     { name: 'Approve Invoices', href: '/dashboard/approve', roles: ['salam'], icon: CheckSquare },
     { name: 'Finance Hub', href: '/dashboard/finance', roles: ['accountant', 'salam'], icon: CreditCard },
+    { name: 'Payments', href: '/dashboard/payments', roles: ['payer', 'salam'], icon: Banknote },
     { name: 'Brand Directory', href: '/dashboard/brands', roles: ['amin', 'salam'], icon: Building2 },
   ];
 

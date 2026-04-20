@@ -38,6 +38,8 @@ export default function LoginPage() {
         router.push('/dashboard/approve');
       } else if (profile?.role === 'accountant') {
         router.push('/dashboard/finance');
+      } else if (profile?.role === 'payer') {
+        router.push('/dashboard/payments');
       } else {
         router.push('/unauthorized');
       }
