@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { format } from 'date-fns';
-import { Check, X, FileText, Loader2, MessageSquareX } from 'lucide-react';
+import { Check, X, FileText, Loader2, MessageSquareX, RotateCcw } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 
 type Invoice = {
@@ -201,6 +201,18 @@ export default function DashboardClient({ initialInvoices }: { initialInvoices: 
                   </td>
                   <td className="px-4 py-4">
                     <div className="font-medium text-gray-900">{inv.vendor_name}</div>
+                    {activeTab === 'Pending' && inv.rejection_comment && (
+                      <div
+                        className="mt-1.5 inline-flex items-start gap-1 text-[11px] bg-amber-50 text-amber-800 border border-amber-200 px-2 py-1 rounded max-w-[220px]"
+                        title={`Previously rejected: ${inv.rejection_comment}`}
+                      >
+                        <RotateCcw className="w-3 h-3 mt-0.5 shrink-0" />
+                        <span className="truncate">
+                          <span className="font-semibold">Re-opened.</span>{' '}
+                          <span className="text-amber-700">Prev: {inv.rejection_comment}</span>
+                        </span>
+                      </div>
+                    )}
                   </td>
                   <td className="px-4 py-4">
                     <div className="font-medium text-gray-900">{inv.brand_name}</div>
@@ -294,6 +306,15 @@ export default function DashboardClient({ initialInvoices }: { initialInvoices: 
                 <div>
                   <p className="font-semibold text-gray-900">{inv.vendor_name}</p>
                   <p className="text-xs text-gray-500">{inv.brand_name} • {inv.branch_id}</p>
+                  {activeTab === 'Pending' && inv.rejection_comment && (
+                    <div className="mt-2 inline-flex items-start gap-1 text-[11px] bg-amber-50 text-amber-800 border border-amber-200 px-2 py-1 rounded max-w-[260px]">
+                      <RotateCcw className="w-3 h-3 mt-0.5 shrink-0" />
+                      <span>
+                        <span className="font-semibold">Re-opened.</span>{' '}
+                        <span className="text-amber-700">Prev: {inv.rejection_comment}</span>
+                      </span>
+                    </div>
+                  )}
                 </div>
                 <span className={`text-lg font-bold whitespace-nowrap ${isReturn ? 'text-rose-700' : 'text-gray-900'}`}>
                   {isReturn && <span className="text-sm mr-0.5">−</span>}

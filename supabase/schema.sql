@@ -203,6 +203,17 @@ ALTER TABLE public.profiles
     ADD CONSTRAINT profiles_role_check
     CHECK (role IN ('amin', 'salam', 'accountant', 'payer'));
 
+-- ─────────────────────────────────────────────────────────────────────────────
+-- Notification tracking
+-- Timestamps for when the accountant sent the "payment done" WhatsApp to the
+-- vendor, and when they notified Salam. These replace the previous
+-- localStorage-based tracking, which was per-browser and polluted stale data
+-- across users. Nullable — null means "not yet notified".
+-- ─────────────────────────────────────────────────────────────────────────────
+ALTER TABLE public.invoices
+    ADD COLUMN IF NOT EXISTS vendor_notified_at TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS salam_notified_at TIMESTAMPTZ;
+
 -- Function to cascade brand_name updates to invoices table
 CREATE OR REPLACE FUNCTION public.cascade_brand_name_update()
 RETURNS TRIGGER AS $$

@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo } from 'react';
 import { format } from 'date-fns';
 import { supabase } from '@/lib/supabase';
 import { Check, FileText, CreditCard, Loader2, Download, ShieldCheck, Clock } from 'lucide-react';
@@ -20,6 +20,8 @@ type Invoice = {
   created_at: string;
   updated_at?: string;
   type?: 'invoice' | 'return';
+  vendor_notified_at?: string | null;
+  salam_notified_at?: string | null;
 };
 
 type BrandRecord = {
@@ -38,30 +40,32 @@ export default function FinanceClient({
   const [invoices, setInvoices] = useState<Invoice[]>(initialInvoices);
   const [activeTab, setActiveTab] = useState<'To Authorize' | 'Awaiting Payment' | 'History'>('To Authorize');
   const [authorizingId, setAuthorizingId] = useState<string | null>(null);
+  const [notifyingId, setNotifyingId] = useState<string | null>(null);
 
-  // Notification tracking — persisted so the buttons stay disabled across reloads.
-  const [vendorSentIds, setVendorSentIds] = useState<Set<string>>(() => {
-    if (typeof window !== 'undefined') {
-      const saved = localStorage.getItem('vendorSentIds');
-      return saved ? new Set(JSON.parse(saved)) : new Set();
+  // Notification state lives on each invoice row (vendor_notified_at /
+  // salam_notified_at). It's authoritative across all browsers and users —
+  // no localStorage, no per-browser drift, no stale pollution.
+  const markNotified = async (inv: Invoice, target: 'vendor' | 'salam') => {
+    setNotifyingId(`${inv.id}:${target}`);
+    try {
+      const res = await fetch('/api/invoices/notify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: inv.id, target }),
+      });
+      const result = await res.json();
+      if (!res.ok) throw new Error(result.error || 'Failed to mark notification');
+
+      const column = target === 'vendor' ? 'vendor_notified_at' : 'salam_notified_at';
+      setInvoices(curr =>
+        curr.map(i => (i.id === inv.id ? { ...i, [column]: result.notified_at } : i))
+      );
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Failed to record notification.');
+    } finally {
+      setNotifyingId(null);
     }
-    return new Set();
-  });
-  const [salamNotifiedIds, setSalamNotifiedIds] = useState<Set<string>>(() => {
-    if (typeof window !== 'undefined') {
-      const saved = localStorage.getItem('salamNotifiedIds');
-      return saved ? new Set(JSON.parse(saved)) : new Set();
-    }
-    return new Set();
-  });
-
-  useEffect(() => {
-    localStorage.setItem('vendorSentIds', JSON.stringify(Array.from(vendorSentIds)));
-  }, [vendorSentIds]);
-
-  useEffect(() => {
-    localStorage.setItem('salamNotifiedIds', JSON.stringify(Array.from(salamNotifiedIds)));
-  }, [salamNotifiedIds]);
+  };
 
   const handleNotifyVendor = (inv: Invoice) => {
     const brand = brands.find(b => b.brand_name === inv.brand_name);
@@ -94,7 +98,7 @@ Thank you for doing business with us.
 Kayan Sweets Team`;
 
     window.open(`https://wa.me/${brand.whatsapp_number.replace(/\\+/g, '')}?text=${encodeURIComponent(message)}`, '_blank');
-    setVendorSentIds(prev => new Set(prev).add(inv.id));
+    markNotified(inv, 'vendor');
   };
 
   const handleNotifySalam = (inv: Invoice) => {
@@ -116,7 +120,7 @@ Uploaded by the Payments Team.
 Kayan Sweets Team`;
 
     window.open(`https://wa.me/${salamNumber.replace(/\\+/g, '')}?text=${encodeURIComponent(message)}`, '_blank');
-    setSalamNotifiedIds(prev => new Set(prev).add(inv.id));
+    markNotified(inv, 'salam');
   };
 
   const openSecureDocument = async (pathOrUrl: string, bucket: string) => {
@@ -383,26 +387,28 @@ Kayan Sweets Team`;
                                   </div>
                                 );
                               }
-                              const isSent = vendorSentIds.has(inv.id);
+                              const isSent = !!inv.vendor_notified_at;
+                              const isBusy = notifyingId === `${inv.id}:vendor`;
                               return (
                                 <button
                                   onClick={() => handleNotifyVendor(inv)}
-                                  disabled={isSent}
+                                  disabled={isSent || isBusy}
                                   className={`text-xs px-3 py-1.5 rounded font-medium flex items-center shadow-sm transition-colors whitespace-nowrap ${isSent ? 'bg-emerald-100 text-emerald-700 cursor-not-allowed' : 'bg-white border border-emerald-500 text-emerald-600 hover:bg-emerald-50'}`}
                                 >
-                                  {isSent ? 'Sent ✓' : 'Send to Vendor'}
+                                  {isSent ? 'Sent ✓' : isBusy ? 'Saving…' : 'Send to Vendor'}
                                 </button>
                               );
                             })()}
                             {(() => {
-                              const isNotified = salamNotifiedIds.has(inv.id);
+                              const isNotified = !!inv.salam_notified_at;
+                              const isBusy = notifyingId === `${inv.id}:salam`;
                               return (
                                 <button
                                   onClick={() => handleNotifySalam(inv)}
-                                  disabled={isNotified}
+                                  disabled={isNotified || isBusy}
                                   className={`text-xs px-3 py-1.5 rounded font-medium flex items-center shadow-sm transition-colors whitespace-nowrap ${isNotified ? 'bg-emerald-100 text-emerald-700 cursor-not-allowed' : 'bg-emerald-600 text-white hover:bg-emerald-700'}`}
                                 >
-                                  {isNotified ? 'Notified ✓' : 'Notify Salam'}
+                                  {isNotified ? 'Notified ✓' : isBusy ? 'Saving…' : 'Notify Salam'}
                                 </button>
                               );
                             })()}
@@ -488,26 +494,28 @@ Kayan Sweets Team`;
                               </div>
                             );
                           }
-                          const isSent = vendorSentIds.has(inv.id);
+                          const isSent = !!inv.vendor_notified_at;
+                          const isBusy = notifyingId === `${inv.id}:vendor`;
                           return (
                             <button
                               onClick={() => handleNotifyVendor(inv)}
-                              disabled={isSent}
+                              disabled={isSent || isBusy}
                               className={`w-full text-sm py-2.5 rounded-lg font-semibold flex items-center justify-center shadow-sm transition-colors ${isSent ? 'bg-emerald-100 text-emerald-800 cursor-not-allowed' : 'bg-white border border-emerald-500 text-emerald-700 hover:bg-emerald-50'}`}
                             >
-                              {isSent ? 'Sent to Vendor ✓' : 'Send to Vendor'}
+                              {isSent ? 'Sent to Vendor ✓' : isBusy ? 'Saving…' : 'Send to Vendor'}
                             </button>
                           );
                         })()}
                         {(() => {
-                          const isNotified = salamNotifiedIds.has(inv.id);
+                          const isNotified = !!inv.salam_notified_at;
+                          const isBusy = notifyingId === `${inv.id}:salam`;
                           return (
                             <button
                               onClick={() => handleNotifySalam(inv)}
-                              disabled={isNotified}
+                              disabled={isNotified || isBusy}
                               className={`w-full text-sm py-2.5 rounded-lg font-semibold flex items-center justify-center shadow-sm transition-colors ${isNotified ? 'bg-emerald-100 text-emerald-800 cursor-not-allowed' : 'bg-indigo-600 text-white hover:bg-indigo-700'}`}
                             >
-                              {isNotified ? 'Salam Notified ✓' : 'Notify Salam'}
+                              {isNotified ? 'Salam Notified ✓' : isBusy ? 'Saving…' : 'Notify Salam'}
                             </button>
                           );
                         })()}

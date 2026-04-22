@@ -115,7 +115,7 @@ export async function PUT(request: NextRequest) {
       return NextResponse.json({ error: 'ID and status are required' }, { status: 400 });
     }
 
-    const validStatuses = ['Verified', 'Rejected', 'Approved', 'ReadyToPay', 'Paid'];
+    const validStatuses = ['Pending', 'Verified', 'Rejected', 'Approved', 'ReadyToPay', 'Paid'];
     if (!validStatuses.includes(status)) {
       return NextResponse.json({ error: `Invalid status. Must be one of: ${validStatuses.join(', ')}` }, { status: 400 });
     }

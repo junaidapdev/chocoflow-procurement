@@ -2,7 +2,7 @@
 
 import { useState, useMemo } from 'react';
 import { format } from 'date-fns';
-import { CheckSquare, Square, FileText, CheckCircle2, TrendingUp, Filter, Loader2 } from 'lucide-react';
+import { CheckSquare, Square, FileText, CheckCircle2, TrendingUp, Filter, Loader2, MessageSquareX, RotateCcw } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 
 type Invoice = {
@@ -18,6 +18,7 @@ type Invoice = {
   created_at: string;
   updated_at: string;
   type?: 'invoice' | 'return';
+  rejection_comment?: string | null;
 };
 
 const TypeCell = ({ type }: { type?: string }) => {
@@ -42,6 +43,7 @@ export default function ApproveClient({ initialInvoices }: { initialInvoices: In
   const [invoices, setInvoices] = useState<Invoice[]>(initialInvoices);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [isProcessing, setIsProcessing] = useState(false);
+  const [reopeningId, setReopeningId] = useState<string | null>(null);
   const [activeFilter, setActiveFilter] = useState<string>('Verified'); // Stats bar filter
 
   const openSecureDocument = async (pathOrUrl: string, bucket: string) => {
@@ -63,13 +65,28 @@ export default function ApproveClient({ initialInvoices }: { initialInvoices: In
   const verifiedCount = invoices.filter(inv => inv.status === 'Verified').length;
   const approvedCount = invoices.filter(inv => inv.status === 'Approved').length;
   const paidCount = invoices.filter(inv => inv.status === 'Paid').length;
+  const rejectedCount = invoices.filter(inv => inv.status === 'Rejected').length;
 
-  // Net-aware totals: returns subtract from the outstanding balance
-  const totalOutstanding = useMemo(() => {
-    return invoices
-      .filter(inv => inv.status === 'Verified' || inv.status === 'Approved')
-      .reduce((sum, inv) => sum + signedAmount(inv), 0);
+  // Net-aware totals broken down by status. Returns subtract within their
+  // bucket — so an Approved return reduces the Approved total, not Verified.
+  const totalsByStatus = useMemo(() => {
+    const sumStatus = (status: string) =>
+      invoices
+        .filter(inv => inv.status === status)
+        .reduce((sum, inv) => sum + signedAmount(inv), 0);
+
+    const verified = sumStatus('Verified');
+    const approved = sumStatus('Approved');
+    const paid = sumStatus('Paid');
+    return {
+      verified,
+      approved,
+      paid,
+      outstanding: verified + approved, // money still owed (not yet paid)
+    };
   }, [invoices]);
+
+  const totalOutstanding = totalsByStatus.outstanding;
 
   const brandSummary = useMemo(() => {
     const validInvoices = invoices.filter(inv => inv.status === 'Verified' || inv.status === 'Approved');
@@ -100,6 +117,35 @@ export default function ApproveClient({ initialInvoices }: { initialInvoices: In
       setSelectedIds(new Set());
     } else {
       setSelectedIds(new Set(queueToDisplay.map(inv => inv.id)));
+    }
+  };
+
+  // Re-open a rejected invoice — flips it back to Pending so the admin can
+  // re-review. The original rejection_comment is preserved on the row so the
+  // admin sees context on the second pass ("previously rejected for: ...").
+  const handleReopen = async (inv: Invoice) => {
+    if (!confirm(`Re-open invoice #${inv.invoice_number} for review?\n\nThe admin will see it again in the Pending queue.`)) {
+      return;
+    }
+    setReopeningId(inv.id);
+
+    // Optimistic update
+    setInvoices(curr => curr.map(i => (i.id === inv.id ? { ...i, status: 'Pending' } : i)));
+
+    try {
+      const res = await fetch('/api/invoices', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: inv.id, status: 'Pending' }),
+      });
+      if (!res.ok) throw new Error('Server rejected the request');
+    } catch (err) {
+      console.error('Failed to re-open invoice:', err);
+      // Revert on failure
+      setInvoices(curr => curr.map(i => (i.id === inv.id ? { ...i, status: 'Rejected' } : i)));
+      alert('Failed to re-open invoice. Please try again.');
+    } finally {
+      setReopeningId(null);
     }
   };
 
@@ -150,12 +196,13 @@ export default function ApproveClient({ initialInvoices }: { initialInvoices: In
     <div className="space-y-6">
       
       {/* Top Stats Bar */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
         {[
           { label: 'Pending', count: pendingCount, color: 'bg-yellow-50 text-yellow-700 border-yellow-200' },
           { label: 'Verified', count: verifiedCount, color: 'bg-blue-50 text-blue-700 border-blue-200' },
           { label: 'Approved', count: approvedCount, color: 'bg-indigo-50 text-indigo-700 border-indigo-200' },
-          { label: 'Paid', count: paidCount, color: 'bg-green-50 text-green-700 border-green-200' }
+          { label: 'Paid', count: paidCount, color: 'bg-green-50 text-green-700 border-green-200' },
+          { label: 'Rejected', count: rejectedCount, color: 'bg-red-50 text-red-700 border-red-200' }
         ].map(stat => (
           <button
             key={stat.label}
@@ -260,6 +307,28 @@ export default function ApproveClient({ initialInvoices }: { initialInvoices: In
                           >
                             Approve
                           </button>
+                        ) : activeFilter === 'Rejected' ? (
+                          <div className="flex flex-col items-stretch gap-1.5 max-w-[240px] mx-auto">
+                            <div className="flex flex-col text-left">
+                              <span className="text-red-700 text-xs font-semibold flex items-center mb-0.5">
+                                <MessageSquareX className="w-3 h-3 mr-1" /> Rejected
+                              </span>
+                              <span className="text-xs text-gray-500 truncate" title={inv.rejection_comment || ''}>
+                                {inv.rejection_comment || <em className="text-gray-400">No reason provided</em>}
+                              </span>
+                            </div>
+                            <button
+                              onClick={() => handleReopen(inv)}
+                              disabled={reopeningId === inv.id}
+                              className="flex items-center justify-center gap-1 text-xs font-semibold px-3 py-1.5 bg-amber-50 text-amber-800 border border-amber-200 hover:bg-amber-100 rounded-md transition-colors disabled:opacity-50"
+                            >
+                              {reopeningId === inv.id ? (
+                                <><Loader2 className="w-3 h-3 animate-spin" /> Re-opening…</>
+                              ) : (
+                                <><RotateCcw className="w-3 h-3" /> Re-open for Review</>
+                              )}
+                            </button>
+                          </div>
                         ) : (
                           <span className="text-xs bg-gray-100 text-gray-600 px-2 py-1 rounded-md font-medium uppercase tracking-wide">
                             {inv.status}
@@ -324,6 +393,28 @@ export default function ApproveClient({ initialInvoices }: { initialInvoices: In
                       >
                         Approve
                       </button>
+                    ) : activeFilter === 'Rejected' ? (
+                      <div className="flex flex-col items-end gap-2 max-w-full w-full">
+                        <div className="flex flex-col items-end">
+                          <span className="text-red-700 text-xs font-semibold flex items-center mb-0.5">
+                            <MessageSquareX className="w-3 h-3 mr-1" /> Rejected
+                          </span>
+                          <span className="text-xs text-gray-600 text-right">
+                            {inv.rejection_comment || <em className="text-gray-400">No reason provided</em>}
+                          </span>
+                        </div>
+                        <button
+                          onClick={() => handleReopen(inv)}
+                          disabled={reopeningId === inv.id}
+                          className="flex items-center justify-center gap-1 text-xs font-semibold px-3 py-1.5 bg-amber-50 text-amber-800 border border-amber-200 hover:bg-amber-100 rounded-md transition-colors disabled:opacity-50"
+                        >
+                          {reopeningId === inv.id ? (
+                            <><Loader2 className="w-3 h-3 animate-spin" /> Re-opening…</>
+                          ) : (
+                            <><RotateCcw className="w-3 h-3" /> Re-open for Review</>
+                          )}
+                        </button>
+                      </div>
                     ) : (
                       <span className="text-xs bg-gray-100 text-gray-600 px-2 py-1 rounded-md font-medium uppercase">
                         {inv.status}
@@ -348,8 +439,43 @@ export default function ApproveClient({ initialInvoices }: { initialInvoices: In
               <span className="text-gray-400 font-medium">SAR</span>
             </div>
             <p className="text-xs text-gray-500 mt-2 flex items-center">
-              <TrendingUp className="w-3.5 h-3.5 mr-1.5" /> Includes Verified & Approved
+              <TrendingUp className="w-3.5 h-3.5 mr-1.5" /> Verified + Approved (not yet paid)
             </p>
+
+            {/* Breakdown by status */}
+            <div className="mt-5 pt-5 border-t border-gray-700/70 space-y-2.5">
+              <div className="flex items-center justify-between text-sm">
+                <span className="flex items-center text-blue-300">
+                  <span className="w-2 h-2 rounded-full bg-blue-400 mr-2" />
+                  Verified
+                </span>
+                <span className="font-semibold tabular-nums">
+                  {totalsByStatus.verified.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                  <span className="text-gray-500 text-xs ml-1">SAR</span>
+                </span>
+              </div>
+              <div className="flex items-center justify-between text-sm">
+                <span className="flex items-center text-indigo-300">
+                  <span className="w-2 h-2 rounded-full bg-indigo-400 mr-2" />
+                  Approved
+                </span>
+                <span className="font-semibold tabular-nums">
+                  {totalsByStatus.approved.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                  <span className="text-gray-500 text-xs ml-1">SAR</span>
+                </span>
+              </div>
+              <div className="flex items-center justify-between text-sm pt-2 mt-1 border-t border-gray-700/40">
+                <span className="flex items-center text-emerald-300">
+                  <span className="w-2 h-2 rounded-full bg-emerald-400 mr-2" />
+                  Paid
+                  <span className="text-gray-500 text-[10px] ml-1.5 normal-case">(settled)</span>
+                </span>
+                <span className="font-semibold tabular-nums text-emerald-200">
+                  {totalsByStatus.paid.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                  <span className="text-gray-500 text-xs ml-1">SAR</span>
+                </span>
+              </div>
+            </div>
           </div>
 
           <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
