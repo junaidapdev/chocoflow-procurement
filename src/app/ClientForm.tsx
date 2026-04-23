@@ -42,6 +42,7 @@ const BRAND_FOLDER_MAP: Record<string, string> = {
   "السيوف": "Al Suyouf",
   "مرابج الخليج": "Marabej Al Khaleej",
   "لوثيره": "Luthira",
+  "ديكو": "Deco",
 };
 
 const schema = z.object({

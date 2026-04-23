@@ -64,11 +64,14 @@ export default function ApproveClient({ initialInvoices }: { initialInvoices: In
   const pendingCount = invoices.filter(inv => inv.status === 'Pending').length;
   const verifiedCount = invoices.filter(inv => inv.status === 'Verified').length;
   const approvedCount = invoices.filter(inv => inv.status === 'Approved').length;
+  const readyToPayCount = invoices.filter(inv => inv.status === 'ReadyToPay').length;
   const paidCount = invoices.filter(inv => inv.status === 'Paid').length;
   const rejectedCount = invoices.filter(inv => inv.status === 'Rejected').length;
 
   // Net-aware totals broken down by status. Returns subtract within their
   // bucket — so an Approved return reduces the Approved total, not Verified.
+  // Outstanding = everything that hasn't been physically paid yet, which
+  // includes ReadyToPay (accountant has authorized, payer hasn't transferred).
   const totalsByStatus = useMemo(() => {
     const sumStatus = (status: string) =>
       invoices
@@ -77,32 +80,54 @@ export default function ApproveClient({ initialInvoices }: { initialInvoices: In
 
     const verified = sumStatus('Verified');
     const approved = sumStatus('Approved');
+    const readyToPay = sumStatus('ReadyToPay');
     const paid = sumStatus('Paid');
     return {
       verified,
       approved,
+      readyToPay,
       paid,
-      outstanding: verified + approved, // money still owed (not yet paid)
+      outstanding: verified + approved + readyToPay, // money committed but not yet sent
     };
   }, [invoices]);
 
   const totalOutstanding = totalsByStatus.outstanding;
 
+  // Per-brand outstanding breakdown. Includes Verified, Approved, and
+  // ReadyToPay so the totals here line up with the Total Outstanding card.
+  // Each brand also carries per-status sub-totals for the stacked bar.
   const brandSummary = useMemo(() => {
-    const validInvoices = invoices.filter(inv => inv.status === 'Verified' || inv.status === 'Approved');
-    const summary: Record<string, { count: number, total: number }> = {};
+    type BrandStats = {
+      count: number;
+      total: number;
+      verified: number;
+      approved: number;
+      readyToPay: number;
+    };
+    const summary: Record<string, BrandStats> = {};
 
-    validInvoices.forEach(inv => {
-      if (!summary[inv.brand_name]) summary[inv.brand_name] = { count: 0, total: 0 };
-      summary[inv.brand_name].count += 1;
-      summary[inv.brand_name].total += signedAmount(inv);
-    });
+    invoices
+      .filter(inv => ['Verified', 'Approved', 'ReadyToPay'].includes(inv.status))
+      .forEach(inv => {
+        if (!summary[inv.brand_name]) {
+          summary[inv.brand_name] = { count: 0, total: 0, verified: 0, approved: 0, readyToPay: 0 };
+        }
+        const amt = signedAmount(inv);
+        const s = summary[inv.brand_name];
+        s.count += 1;
+        s.total += amt;
+        if (inv.status === 'Verified') s.verified += amt;
+        else if (inv.status === 'Approved') s.approved += amt;
+        else if (inv.status === 'ReadyToPay') s.readyToPay += amt;
+      });
 
     return Object.entries(summary).sort((a, b) => b[1].total - a[1].total);
   }, [invoices]);
 
   // Queue to display
   const queueToDisplay = invoices.filter(inv => inv.status === activeFilter);
+  // Friendly label for headings (DB uses "ReadyToPay", users read "Ready to Pay")
+  const filterLabel = activeFilter === 'ReadyToPay' ? 'Ready to Pay' : activeFilter;
   const isAllSelected = queueToDisplay.length > 0 && queueToDisplay.every(inv => selectedIds.has(inv.id));
 
   const toggleSelect = (id: string) => {
@@ -196,18 +221,19 @@ export default function ApproveClient({ initialInvoices }: { initialInvoices: In
     <div className="space-y-6">
       
       {/* Top Stats Bar */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
         {[
-          { label: 'Pending', count: pendingCount, color: 'bg-yellow-50 text-yellow-700 border-yellow-200' },
-          { label: 'Verified', count: verifiedCount, color: 'bg-blue-50 text-blue-700 border-blue-200' },
-          { label: 'Approved', count: approvedCount, color: 'bg-indigo-50 text-indigo-700 border-indigo-200' },
-          { label: 'Paid', count: paidCount, color: 'bg-green-50 text-green-700 border-green-200' },
-          { label: 'Rejected', count: rejectedCount, color: 'bg-red-50 text-red-700 border-red-200' }
+          { value: 'Pending',    label: 'Pending',     count: pendingCount,    color: 'bg-yellow-50 text-yellow-700 border-yellow-200' },
+          { value: 'Verified',   label: 'Verified',    count: verifiedCount,   color: 'bg-blue-50 text-blue-700 border-blue-200' },
+          { value: 'Approved',   label: 'Approved',    count: approvedCount,   color: 'bg-indigo-50 text-indigo-700 border-indigo-200' },
+          { value: 'ReadyToPay', label: 'Ready to Pay',count: readyToPayCount, color: 'bg-amber-50 text-amber-700 border-amber-200' },
+          { value: 'Paid',       label: 'Paid',        count: paidCount,       color: 'bg-green-50 text-green-700 border-green-200' },
+          { value: 'Rejected',   label: 'Rejected',    count: rejectedCount,   color: 'bg-red-50 text-red-700 border-red-200' },
         ].map(stat => (
           <button
-            key={stat.label}
-            onClick={() => setActiveFilter(stat.label)}
-            className={`flex flex-col items-start p-4 rounded-xl border transition-all ${stat.color} ${activeFilter === stat.label ? 'ring-2 ring-offset-1 ring-gray-900 shadow-sm' : 'opacity-80 hover:opacity-100 hover:shadow-sm'}`}
+            key={stat.value}
+            onClick={() => setActiveFilter(stat.value)}
+            className={`flex flex-col items-start p-4 rounded-xl border transition-all ${stat.color} ${activeFilter === stat.value ? 'ring-2 ring-offset-1 ring-gray-900 shadow-sm' : 'opacity-80 hover:opacity-100 hover:shadow-sm'}`}
           >
             <span className="text-sm font-semibold opacity-80 uppercase tracking-wider">{stat.label}</span>
             <span className="text-3xl font-black mt-1">{stat.count}</span>
@@ -215,14 +241,14 @@ export default function ApproveClient({ initialInvoices }: { initialInvoices: In
         ))}
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 items-start">
         
         {/* Section 1: Approval Queue (Takes up 2 cols on lg) */}
         <div className="lg:col-span-2 bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden flex flex-col">
           <div className="border-b border-gray-200 px-4 sm:px-6 py-4 sm:py-5 bg-gray-50 flex flex-col sm:flex-row gap-3 sm:justify-between sm:items-center">
             <h2 className="text-lg font-bold text-gray-900 flex items-center">
               <Filter className="w-5 h-5 mr-2 text-gray-400" />
-              Showing {activeFilter} Queue
+              Showing {filterLabel} Queue
             </h2>
             {activeFilter === 'Verified' && selectedIds.size > 0 && (
               <button
@@ -261,7 +287,7 @@ export default function ApproveClient({ initialInvoices }: { initialInvoices: In
                 {queueToDisplay.length === 0 ? (
                   <tr>
                     <td colSpan={7} className="px-6 py-12 text-center text-gray-500">
-                      No invoices currently in the {activeFilter} state.
+                      No invoices currently in the {filterLabel} state.
                     </td>
                   </tr>
                 ) : (
@@ -329,6 +355,10 @@ export default function ApproveClient({ initialInvoices }: { initialInvoices: In
                               )}
                             </button>
                           </div>
+                        ) : inv.status === 'ReadyToPay' ? (
+                          <span className="text-xs font-semibold text-amber-800 bg-amber-50 px-2.5 py-1 rounded-md border border-amber-200 whitespace-nowrap">
+                            WITH PAYER
+                          </span>
                         ) : (
                           <span className="text-xs bg-gray-100 text-gray-600 px-2 py-1 rounded-md font-medium uppercase tracking-wide">
                             {inv.status}
@@ -346,7 +376,7 @@ export default function ApproveClient({ initialInvoices }: { initialInvoices: In
           <div className="lg:hidden divide-y divide-gray-100">
             {queueToDisplay.length === 0 ? (
               <div className="px-4 py-12 text-center text-gray-500">
-                No invoices currently in the {activeFilter} state.
+                No invoices currently in the {filterLabel} state.
               </div>
             ) : (
               queueToDisplay.map((inv) => {
@@ -415,6 +445,10 @@ export default function ApproveClient({ initialInvoices }: { initialInvoices: In
                           )}
                         </button>
                       </div>
+                    ) : inv.status === 'ReadyToPay' ? (
+                      <span className="text-xs font-semibold text-amber-800 bg-amber-50 px-2.5 py-1 rounded-md border border-amber-200">
+                        WITH PAYER
+                      </span>
                     ) : (
                       <span className="text-xs bg-gray-100 text-gray-600 px-2 py-1 rounded-md font-medium uppercase">
                         {inv.status}
@@ -439,7 +473,7 @@ export default function ApproveClient({ initialInvoices }: { initialInvoices: In
               <span className="text-gray-400 font-medium">SAR</span>
             </div>
             <p className="text-xs text-gray-500 mt-2 flex items-center">
-              <TrendingUp className="w-3.5 h-3.5 mr-1.5" /> Verified + Approved (not yet paid)
+              <TrendingUp className="w-3.5 h-3.5 mr-1.5" /> Verified + Approved + Ready to Pay (not yet sent)
             </p>
 
             {/* Breakdown by status */}
@@ -464,6 +498,17 @@ export default function ApproveClient({ initialInvoices }: { initialInvoices: In
                   <span className="text-gray-500 text-xs ml-1">SAR</span>
                 </span>
               </div>
+              <div className="flex items-center justify-between text-sm">
+                <span className="flex items-center text-amber-300">
+                  <span className="w-2 h-2 rounded-full bg-amber-400 mr-2" />
+                  Ready to Pay
+                  <span className="text-gray-500 text-[10px] ml-1.5 normal-case">(with payer)</span>
+                </span>
+                <span className="font-semibold tabular-nums">
+                  {totalsByStatus.readyToPay.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                  <span className="text-gray-500 text-xs ml-1">SAR</span>
+                </span>
+              </div>
               <div className="flex items-center justify-between text-sm pt-2 mt-1 border-t border-gray-700/40">
                 <span className="flex items-center text-emerald-300">
                   <span className="w-2 h-2 rounded-full bg-emerald-400 mr-2" />
@@ -481,35 +526,65 @@ export default function ApproveClient({ initialInvoices }: { initialInvoices: In
           <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
             <div className="border-b border-gray-100 px-5 py-4 bg-gray-50/50">
               <h3 className="font-bold text-gray-900">Brand Breakdown</h3>
-              <p className="text-xs text-gray-500">Volumetric overview</p>
+              <p className="text-xs text-gray-500">Outstanding by brand · highest first</p>
             </div>
-            <div className="p-0">
-              <table className="w-full text-sm text-left">
-                <thead className="bg-white text-gray-400 text-xs border-b border-gray-100">
-                  <tr>
-                    <th className="px-5 py-2.5 font-medium">Brand</th>
-                    <th className="px-5 py-2.5 font-medium text-center">Inv</th>
-                    <th className="px-5 py-2.5 font-medium text-right">Total (SAR)</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-50">
-                  {brandSummary.length === 0 ? (
-                     <tr>
-                       <td colSpan={3} className="px-5 py-8 text-center text-gray-400 text-xs font-medium">No valid data</td>
-                     </tr>
-                  ) : (
-                    brandSummary.map(([brand, stats]) => (
-                      <tr key={brand} className="hover:bg-gray-50/50">
-                        <td className="px-5 py-3 font-semibold text-gray-900">{brand}</td>
-                        <td className="px-5 py-3 text-center text-gray-500">{stats.count}</td>
-                        <td className="px-5 py-3 text-right font-medium text-gray-700">
-                           {stats.total.toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                        </td>
-                      </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
+            <div className="divide-y divide-gray-100">
+              {brandSummary.length === 0 ? (
+                <div className="px-5 py-10 text-center text-gray-400 text-sm">
+                  No outstanding invoices
+                </div>
+              ) : (
+                brandSummary.map(([brand, stats]) => {
+                  // Only show status lines that actually have money in them.
+                  const lines: { label: string; amount: number; color: string }[] = [];
+                  if (stats.verified > 0)   lines.push({ label: 'Awaiting approval',  amount: stats.verified,   color: 'text-blue-700' });
+                  if (stats.approved > 0)   lines.push({ label: 'Awaiting authorization', amount: stats.approved, color: 'text-indigo-700' });
+                  if (stats.readyToPay > 0) lines.push({ label: 'With payer',         amount: stats.readyToPay, color: 'text-amber-700' });
+
+                  return (
+                    <div key={brand} className="px-5 py-3 hover:bg-gray-50/50 transition-colors">
+                      {/* Brand name + headline total */}
+                      <div className="flex items-baseline justify-between gap-3">
+                        <h4 className="font-semibold text-gray-900 text-sm truncate" title={brand}>
+                          {brand}
+                        </h4>
+                        <div className="shrink-0 text-right">
+                          <span className="font-bold text-gray-900 text-base tabular-nums">
+                            {stats.total.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                          </span>
+                          <span className="text-gray-400 text-[11px] font-medium ml-1">SAR</span>
+                        </div>
+                      </div>
+
+                      {/* Single-status brands: count + status on ONE line.
+                          Multi-status brands: count on its own line, then per-status breakdown. */}
+                      {lines.length === 1 ? (
+                        <p className="text-[11px] text-gray-500 mt-0.5">
+                          {stats.count} invoice{stats.count !== 1 ? 's' : ''}
+                          <span className="text-gray-400"> · </span>
+                          <span className={`${lines[0].color} font-medium`}>{lines[0].label}</span>
+                        </p>
+                      ) : (
+                        <>
+                          <p className="text-[11px] text-gray-500 mt-0.5 mb-1.5">
+                            {stats.count} invoice{stats.count !== 1 ? 's' : ''}
+                          </p>
+                          <div className="space-y-1 pl-3 border-l-2 border-gray-100">
+                            {lines.map(line => (
+                              <div key={line.label} className="flex items-center justify-between text-xs">
+                                <span className={`${line.color} font-medium`}>{line.label}</span>
+                                <span className="text-gray-700 tabular-nums">
+                                  {line.amount.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  );
+                })
+              )}
             </div>
           </div>
         </div>
