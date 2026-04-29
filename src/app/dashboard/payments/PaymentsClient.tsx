@@ -7,6 +7,7 @@ import {
   Check, X, FileText, UploadCloud, CreditCard, Loader2,
   ArrowUpRight, Download, Building2, ChevronDown, ChevronRight,
 } from 'lucide-react';
+import { getBrandEnglishName } from '@/lib/constants';
 
 type Invoice = {
   id: string;
@@ -407,8 +408,22 @@ export default function PaymentsClient({
                       />
                       <Building2 className="w-4 h-4 text-gray-400" />
                       <div className="flex-1 min-w-0">
-                        <div className="font-bold text-gray-900 truncate">{group.vendorName}</div>
-                        <div className="text-xs text-gray-500 truncate">{group.brandName} · {group.invoices.length} invoice{group.invoices.length !== 1 ? 's' : ''}</div>
+                        {/* Brand is the headline — the payer can recognize it at a glance,
+                            including the English transliteration for non-Arabic readers.
+                            Vendor (the supplier we pay) is the smaller subline. */}
+                        <div className="font-bold text-gray-900 text-base truncate flex items-baseline gap-1.5">
+                          <span>{group.brandName}</span>
+                          {getBrandEnglishName(group.brandName) && (
+                            <span className="text-xs font-medium text-gray-500">
+                              ({getBrandEnglishName(group.brandName)})
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-[11px] text-gray-500 truncate mt-0.5">
+                          <span className="text-gray-400">Vendor:</span> {group.vendorName}
+                          <span className="text-gray-300 mx-1">·</span>
+                          {group.invoices.length} invoice{group.invoices.length !== 1 ? 's' : ''}
+                        </div>
                       </div>
                       <div className="text-right shrink-0">
                         <div className="text-sm font-bold text-gray-900">

@@ -6,44 +6,11 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import { CheckCircle2, UploadCloud, Loader2, AlertCircle, FileText } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
-import { BRANCHES } from '@/lib/constants';
+import { BRANCHES, BRAND_FOLDER_MAP } from '@/lib/constants';
 
 const MAX_FILE_SIZE = 5 * 1024 * 1024; // 5MB
 const ACCEPTED_FILE_TYPES = ['application/pdf'];
 const FORM_STORAGE_KEY = 'chocoflow_vendor_form_draft';
-
-// Map Arabic brand names to safe English ASCII folder names for the storage bucket
-const BRAND_FOLDER_MAP: Record<string, string> = {
-  "شنده": "Shunda",
-  "رولز": "Rols",
-  "المذاق الحجاز": "Al Mazaq Al Hijazi",
-  "فليك": "Fleek",
-  "المذاق العربي": "Al Mazaq Al Arabi",
-  "شرقي": "Sharqi",
-  "بيرلين": "Berlin",
-  "زماني": "Zamani",
-  "البحره الدمشقية": "Al Bahra Al Dimashqiya",
-  "رهش": "Rahsh",
-  "فيلان": "Faylan",
-  "كحيله": "Kaheela",
-  "زاد شرق": "Zad Sharq",
-  "لافيره": "Laviere",
-  "بايت كرانشي": "Bite",
-  "ميراه سويت": "Mirah Sweet",
-  "باقة الاصاله": "Baqat Al Asala",
-  "خليج حلا": "Khaleej Hala",
-  "ارينا": "Arena",
-  "دلع مذاق": "Dala Mazaq",
-  "الما": "Alma",
-  "سنابل رهف": "Sanabel Rahaf",
-  "بوكودور": "Bouquet Dor",
-  "حميده": "Humaida",
-  "نخبة كيك": "Nukhbat Cake",
-  "السيوف": "Al Suyouf",
-  "مرابج الخليج": "Marabej Al Khaleej",
-  "لوثيره": "Luthira",
-  "ديكو": "Deco",
-};
 
 const schema = z.object({
   vendorName: z.string().min(2, 'Vendor name is required'),
