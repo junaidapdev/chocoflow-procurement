@@ -178,7 +178,7 @@ export default function ApproveClient({ initialInvoices }: { initialInvoices: In
     if (idsToApprove.length === 0) return;
     setIsProcessing(true);
 
-    setInvoices(current => current.map(inv => 
+    setInvoices(current => current.map(inv =>
       idsToApprove.includes(inv.id) ? { ...inv, status: 'Approved' } : inv
     ));
 
