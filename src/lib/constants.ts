@@ -45,7 +45,8 @@ export const BRAND_FOLDER_MAP: Record<string, string> = {
   "مرابج الخليج": "Marabej Al Khaleej",
   "لوثيره": "Luthira",
   "ديكو": "Deco",
-  "دولشي": "Dolce"
+  "دولشي": "Dolce",
+  "ريفي": "Reefy"
 };
 
 // Convenience: returns the English brand name if mapped, else null.
