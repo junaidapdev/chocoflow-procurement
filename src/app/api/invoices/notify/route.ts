@@ -2,8 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { logAuditEvent } from '@/lib/audit-log';
 import { requireRoles } from '@/lib/auth-context';
 import { getSupabaseAdminClient } from '@/lib/supabase-admin';
-
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{12}$/i;
+import { safeUuid } from '@/lib/uuid';
 
 type NotificationTarget = 'vendor' | 'salam';
 
@@ -18,7 +17,7 @@ type InvoiceNotificationRecord = {
 };
 
 function safeInvoiceId(id: unknown) {
-  return typeof id === 'string' && UUID_PATTERN.test(id) ? id : null;
+  return safeUuid(id);
 }
 
 function isNotificationTarget(target: unknown): target is NotificationTarget {

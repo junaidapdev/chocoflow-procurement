@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { logAuditEvent, type AuditActor } from '@/lib/audit-log';
 import { requireAuthContext, type ProfileRole } from '@/lib/auth-context';
 import { getSupabaseAdminClient } from '@/lib/supabase-admin';
+import { safeUuid } from '@/lib/uuid';
 
 const MAX_FILE_SIZE = 5 * 1024 * 1024; // 5MB
 const ALLOWED_INVOICE_TYPES = ['application/pdf'];
@@ -28,8 +29,6 @@ type InvoiceForAudit = {
 type TransitionDecision =
   | { allowed: true }
   | { allowed: false; reason: string };
-
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function vendorSubmissionActor(vendorName?: string | null): AuditActor {
   return {
@@ -71,7 +70,7 @@ function isInvoiceStatus(status: unknown): status is InvoiceStatus {
 }
 
 function safeEntityId(id: unknown) {
-  return typeof id === 'string' && UUID_PATTERN.test(id) ? id : null;
+  return safeUuid(id);
 }
 
 function invoiceSnapshot(invoice: InvoiceForAudit) {
