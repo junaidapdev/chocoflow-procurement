@@ -89,6 +89,10 @@ export async function middleware(request: NextRequest) {
     if (pathname.startsWith('/dashboard/payments') && profile.role !== 'payer' && profile.role !== 'salam') {
       return NextResponse.redirect(new URL('/unauthorized', request.url))
     }
+
+    if (pathname.startsWith('/dashboard/logs') && profile.role !== 'salam') {
+      return NextResponse.redirect(new URL('/unauthorized', request.url))
+    }
   }
 
   return response

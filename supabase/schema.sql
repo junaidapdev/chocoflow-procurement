@@ -128,7 +128,6 @@ CREATE POLICY "Authenticated users can read receipts bucket"
 CREATE POLICY "Authenticated users can update/delete receipts bucket"
     ON storage.objects FOR UPDATE
     USING (bucket_id = 'receipts' AND auth.role() = 'authenticated');
-    USING (bucket_id = 'receipts' AND auth.role() = 'authenticated');
 
 -- Create brands table
 CREATE TABLE IF NOT EXISTS public.brands (
@@ -229,3 +228,81 @@ $$ LANGUAGE plpgsql SECURITY DEFINER;
 CREATE TRIGGER on_brand_name_update
     AFTER UPDATE ON public.brands
     FOR EACH ROW EXECUTE FUNCTION public.cascade_brand_name_update();
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- Audit logging
+-- Append-only event ledger for business-critical activity across vendor,
+-- admin, accountant, payer, and system/API flows.
+--
+-- We intentionally do not add UPDATE or DELETE policies. Application code
+-- should insert audit rows through a privileged server-side client, and Salam
+-- is the only dashboard role allowed to read the full audit trail.
+-- ─────────────────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS public.audit_logs (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+    -- Who caused the event. Public vendor submissions and system failures will
+    -- not always have an authenticated user.
+    actor_user_id UUID REFERENCES auth.users(id) ON DELETE SET NULL,
+    actor_role TEXT,
+    actor_email TEXT,
+    actor_name TEXT,
+    actor_type TEXT NOT NULL DEFAULT 'authenticated'
+        CHECK (actor_type IN ('authenticated', 'public', 'system')),
+
+    -- What happened and whether the operation succeeded.
+    action TEXT NOT NULL,
+    outcome TEXT NOT NULL DEFAULT 'success'
+        CHECK (outcome IN ('success', 'failure', 'denied')),
+    error_message TEXT,
+
+    -- What business object was affected.
+    entity_type TEXT NOT NULL,
+    entity_id UUID,
+    entity_label TEXT,
+
+    -- Snapshot fields for state transition debugging.
+    before_state JSONB,
+    after_state JSONB,
+    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+
+    -- Request/debug context. Keep secrets and full file contents out of logs.
+    request_ip INET,
+    user_agent TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at
+    ON public.audit_logs(created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_audit_logs_actor_user_id
+    ON public.audit_logs(actor_user_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_audit_logs_actor_role
+    ON public.audit_logs(actor_role, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_audit_logs_action
+    ON public.audit_logs(action, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_audit_logs_outcome
+    ON public.audit_logs(outcome, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_audit_logs_entity
+    ON public.audit_logs(entity_type, entity_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_audit_logs_entity_label
+    ON public.audit_logs(entity_label);
+
+CREATE INDEX IF NOT EXISTS idx_audit_logs_metadata
+    ON public.audit_logs USING GIN (metadata);
+
+ALTER TABLE public.audit_logs ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Salam can select audit logs" ON public.audit_logs;
+CREATE POLICY "Salam can select audit logs"
+    ON public.audit_logs FOR SELECT
+    USING (
+        auth.uid() IN (
+            SELECT id FROM public.profiles WHERE role = 'salam'
+        )
+    );
