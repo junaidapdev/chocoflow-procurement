@@ -2,10 +2,10 @@ import { NextRequest, NextResponse } from 'next/server';
 import { logAuditEvent } from '@/lib/audit-log';
 import { requireRoles } from '@/lib/auth-context';
 import { getSupabaseAdminClient } from '@/lib/supabase-admin';
+import { areUuids } from '@/lib/uuid';
 
 const MAX_FILE_SIZE = 5 * 1024 * 1024; // 5MB
 const ALLOWED_RECEIPT_TYPES = ['application/pdf', 'image/jpeg', 'image/png', 'image/webp'];
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 type PaymentInvoice = {
   id: string;
@@ -27,7 +27,7 @@ function uniqueStrings(values: string[]) {
 }
 
 function validateUuidList(values: string[]) {
-  return values.every(value => UUID_PATTERN.test(value));
+  return areUuids(values);
 }
 
 function parseJsonStringArray(value: string | null, fieldName: string) {
