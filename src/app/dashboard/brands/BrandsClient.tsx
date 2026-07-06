@@ -29,10 +29,11 @@ export default function BrandsClient({ initialBrands }: { initialBrands: Brand[]
   );
 
   const handleUpdate = async (id: string) => {
-    setLoadingId(id);
-    setErrorId(null);
     const brandToUpdate = brands.find(b => b.id === id);
     if (!brandToUpdate) return;
+
+    setLoadingId(id);
+    setErrorId(null);
 
     try {
       const res = await fetch('/api/brands', {

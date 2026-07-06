@@ -1,7 +1,9 @@
+import { randomUUID } from 'crypto';
 import { NextRequest, NextResponse } from 'next/server';
 import { logAuditEvent, type AuditActor } from '@/lib/audit-log';
 import { requireAuthContext, type ProfileRole } from '@/lib/auth-context';
 import { getSupabaseAdminClient } from '@/lib/supabase-admin';
+import { BRANCHES, BRAND_FOLDER_MAP } from '@/lib/constants';
 import { safeUuid } from '@/lib/uuid';
 
 const MAX_FILE_SIZE = 5 * 1024 * 1024; // 5MB
@@ -182,14 +184,14 @@ export async function POST(request: NextRequest) {
     const actor = vendorSubmissionActor(vendor_name);
 
     // --- Validation ---
-    if (!file || !filePath) {
+    if (!file) {
       await logAuditEvent({
         action: 'invoice.upload_rejected_invalid_file',
         entityType: type,
         entityLabel: invoice_number,
         actor,
         outcome: 'failure',
-        errorMessage: 'File and filePath are required',
+        errorMessage: 'File is required',
         metadata: buildSubmissionMetadata({
           invoice_number,
           brand_name,
@@ -199,11 +201,11 @@ export async function POST(request: NextRequest) {
           vendor_name,
           filePath,
           file,
-          rejectionReason: 'missing_file_or_file_path',
+          rejectionReason: 'missing_file',
         }),
         request,
       });
-      return NextResponse.json({ error: 'File and filePath are required' }, { status: 400 });
+      return NextResponse.json({ error: 'File is required' }, { status: 400 });
     }
 
     if (!ALLOWED_INVOICE_TYPES.includes(file.type)) {
@@ -279,6 +281,39 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Amount must be a positive number greater than zero.' }, { status: 400 });
     }
 
+    // --- Required-field + format validation (this endpoint is public) ---
+    const fieldError =
+      (!brand_name?.trim() && 'Brand is required.') ||
+      (!branch_id?.trim() && 'Branch is required.') ||
+      (!invoice_number?.trim() && 'Invoice number is required.') ||
+      (!vendor_name?.trim() && 'Vendor name is required.') ||
+      (!BRANCHES.includes(branch_id) && 'Invalid branch.') ||
+      ((!/^\d{4}-\d{2}-\d{2}$/.test(invoice_date) || Number.isNaN(Date.parse(invoice_date))) && 'Invalid invoice date.') ||
+      null;
+
+    if (fieldError) {
+      await logAuditEvent({
+        action: 'invoice.upload_rejected_invalid_fields',
+        entityType: type,
+        entityLabel: invoice_number,
+        actor,
+        outcome: 'failure',
+        errorMessage: fieldError,
+        metadata: buildSubmissionMetadata({
+          invoice_number,
+          brand_name,
+          branch_id,
+          amountRaw,
+          type,
+          vendor_name,
+          file,
+          rejectionReason: 'invalid_fields',
+        }),
+        request,
+      });
+      return NextResponse.json({ error: fieldError }, { status: 400 });
+    }
+
     const supabaseAdmin = getSupabaseAdminClient();
 
     // --- Duplicate check (scoped by type, so an invoice and a return
@@ -322,12 +357,19 @@ export async function POST(request: NextRequest) {
     }
 
     // --- 1. Upload file to storage ---
+    // Build the storage path on the SERVER from a safe brand folder + a random
+    // id. We never trust the client-supplied path: a caller could otherwise set
+    // it to another vendor's path and overwrite their PDF.
+    const brandFolder = BRAND_FOLDER_MAP[brand_name] || 'misc';
+    const subfolder = type === 'return' ? 'returns/' : '';
+    const storagePath = `${brandFolder}/${subfolder}${randomUUID()}.pdf`;
+
     const buffer = Buffer.from(await file.arrayBuffer());
     const { error: uploadError } = await supabaseAdmin.storage
       .from('invoices')
-      .upload(filePath, buffer, { 
-        upsert: true,
-        contentType: file.type 
+      .upload(storagePath, buffer, {
+        upsert: false,
+        contentType: file.type
       });
 
     if (uploadError) {
@@ -346,7 +388,7 @@ export async function POST(request: NextRequest) {
           amount,
           type,
           vendor_name,
-          filePath,
+          filePath: storagePath,
           file,
           rejectionReason: 'storage_upload_failed',
         }),
@@ -364,7 +406,7 @@ export async function POST(request: NextRequest) {
         invoice_number,
         invoice_date,
         amount,
-        invoice_url: filePath,
+        invoice_url: storagePath,
         vendor_name,
         vendor_email,
         status: 'Pending',
@@ -376,7 +418,35 @@ export async function POST(request: NextRequest) {
     if (dbError) {
       console.error('DB insert error:', dbError);
       // Cleanup: remove the uploaded file since DB insert failed
-      await supabaseAdmin.storage.from('invoices').remove([filePath]);
+      await supabaseAdmin.storage.from('invoices').remove([storagePath]);
+      // A unique-constraint hit means a concurrent submission beat us to it.
+      if (dbError.code === '23505') {
+        const label = type === 'return' ? 'return bill number' : 'invoice number';
+        await logAuditEvent({
+          action: 'invoice.duplicate_rejected',
+          entityType: type,
+          entityLabel: invoice_number,
+          actor,
+          outcome: 'denied',
+          errorMessage: `Duplicate ${label} for this brand`,
+          metadata: buildSubmissionMetadata({
+            invoice_number,
+            brand_name,
+            branch_id,
+            amount,
+            type,
+            vendor_name,
+            filePath: storagePath,
+            file,
+            rejectionReason: 'duplicate_invoice_number_for_brand',
+          }),
+          request,
+        });
+        return NextResponse.json(
+          { error: `This ${label} already exists for this brand. Please check and resubmit.` },
+          { status: 409 }
+        );
+      }
       await logAuditEvent({
         action: 'invoice.database_insert_failed',
         entityType: type,
@@ -391,7 +461,7 @@ export async function POST(request: NextRequest) {
           amount,
           type,
           vendor_name,
-          filePath,
+          filePath: storagePath,
           file,
           rejectionReason: 'database_insert_failed',
         }),
@@ -418,7 +488,7 @@ export async function POST(request: NextRequest) {
         amount,
         type,
         vendor_name,
-        filePath,
+        filePath: storagePath,
         file,
       }),
       request,

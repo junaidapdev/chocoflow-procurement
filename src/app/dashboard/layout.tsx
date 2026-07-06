@@ -1,23 +1,50 @@
-import { createClient } from '@/lib/supabase-server';
+import { headers } from 'next/headers';
 import { redirect } from 'next/navigation';
+import { createClient } from '@/lib/supabase-server';
+import { USER_PROFILE_HEADER } from '@/lib/constants';
 import Sidebar from './Sidebar';
 
+type DashboardProfile = {
+  role: string;
+  full_name?: string | null;
+  email?: string | null;
+};
+
 export default async function DashboardLayout({ children }: { children: React.ReactNode }) {
-  const supabase = createClient();
-  const { data: { session } } = await supabase.auth.getSession();
-  
-  if (!session) {
-    redirect('/login');
+  // Fast path: the middleware already verified the session and handed us the
+  // profile via a request header, so we avoid a second round-trip to the DB.
+  let profile: DashboardProfile | null = null;
+  const headerProfile = headers().get(USER_PROFILE_HEADER);
+
+  if (headerProfile) {
+    try {
+      profile = JSON.parse(headerProfile) as DashboardProfile;
+    } catch {
+      profile = null;
+    }
   }
 
-  const { data: profile } = await supabase
-    .from('profiles')
-    .select('*')
-    .eq('id', session.user.id)
-    .single();
-
+  // Fallback: if the header is somehow missing (e.g. middleware didn't run),
+  // verify the session ourselves. This keeps the page safe on its own.
   if (!profile) {
-    redirect('/unauthorized');
+    const supabase = createClient();
+    const { data: { user } } = await supabase.auth.getUser();
+
+    if (!user) {
+      redirect('/login');
+    }
+
+    const { data } = await supabase
+      .from('profiles')
+      .select('role, full_name, email')
+      .eq('id', user.id)
+      .single();
+
+    if (!data) {
+      redirect('/unauthorized');
+    }
+
+    profile = data as DashboardProfile;
   }
 
   return (

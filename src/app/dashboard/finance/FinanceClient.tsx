@@ -3,6 +3,7 @@
 import { useState, useMemo } from 'react';
 import { format } from 'date-fns';
 import { supabase } from '@/lib/supabase';
+import { openSecureDocument } from '@/lib/storage';
 import { Check, FileText, CreditCard, Loader2, Download, ShieldCheck, Clock } from 'lucide-react';
 
 type Invoice = {
@@ -97,7 +98,7 @@ ${receiptLink}
 Thank you for doing business with us.
 Kayan Sweets Team`;
 
-    window.open(`https://wa.me/${brand.whatsapp_number.replace(/\\+/g, '')}?text=${encodeURIComponent(message)}`, '_blank');
+    window.open(`https://wa.me/${brand.whatsapp_number.replace(/\D/g, '')}?text=${encodeURIComponent(message)}`, '_blank');
     markNotified(inv, 'vendor');
   };
 
@@ -119,23 +120,10 @@ Kayan Sweets Team`;
 Uploaded by the Payments Team.
 Kayan Sweets Team`;
 
-    window.open(`https://wa.me/${salamNumber.replace(/\\+/g, '')}?text=${encodeURIComponent(message)}`, '_blank');
+    window.open(`https://wa.me/${salamNumber.replace(/\D/g, '')}?text=${encodeURIComponent(message)}`, '_blank');
     markNotified(inv, 'salam');
   };
 
-  const openSecureDocument = async (pathOrUrl: string, bucket: string) => {
-    let path = pathOrUrl;
-    if (pathOrUrl.startsWith('http')) {
-      const parts = pathOrUrl.split(`/public/${bucket}/`);
-      if (parts.length > 1) path = parts[1];
-    }
-    const { data } = await supabase.storage.from(bucket).createSignedUrl(path, 60 * 60);
-    if (data?.signedUrl) {
-      window.open(data.signedUrl, '_blank');
-    } else {
-      alert('Could not secure file link.');
-    }
-  };
 
   const toAuthorize = invoices.filter(inv => inv.status === 'Approved');
   const awaitingPayment = invoices.filter(inv => inv.status === 'ReadyToPay');

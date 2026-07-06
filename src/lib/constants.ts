@@ -1,4 +1,23 @@
+import type { ProfileRole } from '@/lib/auth-context';
 
+// Request header the middleware uses to hand the already-verified user profile
+// to the dashboard layout, so the layout doesn't have to re-query the database
+// on every navigation. The middleware always overwrites this header, so a
+// client can never spoof it.
+export const USER_PROFILE_HEADER = 'x-user-profile';
+
+// Which roles may open each dashboard section. This is the single source of
+// truth for route protection: the middleware enforces it server-side, and the
+// Sidebar reads it to decide which links to show. The first matching prefix
+// wins, so list more specific prefixes before more general ones.
+export const DASHBOARD_ROUTE_ROLES: { prefix: string; roles: ProfileRole[] }[] = [
+  { prefix: '/dashboard/verify', roles: ['amin'] },
+  { prefix: '/dashboard/approve', roles: ['salam'] },
+  { prefix: '/dashboard/finance', roles: ['accountant', 'salam'] },
+  { prefix: '/dashboard/payments', roles: ['payer', 'salam'] },
+  { prefix: '/dashboard/brands', roles: ['amin', 'salam'] },
+  { prefix: '/dashboard/logs', roles: ['salam'] },
+];
 
 export const BRANCHES = [
   'السلامة',

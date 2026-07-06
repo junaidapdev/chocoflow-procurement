@@ -3,7 +3,7 @@
 import { useState, useMemo } from 'react';
 import { format } from 'date-fns';
 import { CheckSquare, Square, FileText, CheckCircle2, TrendingUp, Filter, Loader2, MessageSquareX, RotateCcw } from 'lucide-react';
-import { supabase } from '@/lib/supabase';
+import { openSecureDocument } from '@/lib/storage';
 
 type Invoice = {
   id: string;
@@ -46,19 +46,6 @@ export default function ApproveClient({ initialInvoices }: { initialInvoices: In
   const [reopeningId, setReopeningId] = useState<string | null>(null);
   const [activeFilter, setActiveFilter] = useState<string>('Verified'); // Stats bar filter
 
-  const openSecureDocument = async (pathOrUrl: string, bucket: string) => {
-    let path = pathOrUrl;
-    if (pathOrUrl.startsWith('http')) {
-      const parts = pathOrUrl.split(`/public/${bucket}/`);
-      if (parts.length > 1) path = parts[1];
-    }
-    const { data } = await supabase.storage.from(bucket).createSignedUrl(path, 60 * 60);
-    if (data?.signedUrl) {
-      window.open(data.signedUrl, '_blank');
-    } else {
-      alert('Could not secure file link.');
-    }
-  };
 
   // Derived state
   const pendingCount = invoices.filter(inv => inv.status === 'Pending').length;
@@ -163,12 +150,15 @@ export default function ApproveClient({ initialInvoices }: { initialInvoices: In
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ id: inv.id, status: 'Pending' }),
       });
-      if (!res.ok) throw new Error('Server rejected the request');
+      if (!res.ok) {
+        const result = await res.json().catch(() => null);
+        throw new Error(result?.error || 'Server rejected the request');
+      }
     } catch (err) {
       console.error('Failed to re-open invoice:', err);
       // Revert on failure
       setInvoices(curr => curr.map(i => (i.id === inv.id ? { ...i, status: 'Rejected' } : i)));
-      alert('Failed to re-open invoice. Please try again.');
+      alert(err instanceof Error ? err.message : 'Failed to re-open invoice. Please try again.');
     } finally {
       setReopeningId(null);
     }

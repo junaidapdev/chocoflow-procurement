@@ -65,20 +65,17 @@ CREATE OR REPLACE TRIGGER on_auth_user_created
 -- Add RLS to invoices
 ALTER TABLE public.invoices ENABLE ROW LEVEL SECURITY;
 
--- Policy: Anyone can insert invoices (for public vendor submission)
-CREATE POLICY "Anyone can insert invoices" 
-    ON public.invoices FOR INSERT 
-    WITH CHECK (true);
-
 -- Policy: Only authenticated users can read invoices
-CREATE POLICY "Authenticated users can select invoices" 
-    ON public.invoices FOR SELECT 
+-- (dashboards read with the signed-in user's session).
+CREATE POLICY "Authenticated users can select invoices"
+    ON public.invoices FOR SELECT
     USING (auth.role() = 'authenticated');
 
--- Policy: Only authenticated users can update invoices
-CREATE POLICY "Authenticated users can update invoices" 
-    ON public.invoices FOR UPDATE 
-    USING (auth.role() = 'authenticated');
+-- NOTE: There are intentionally NO client-facing INSERT or UPDATE policies on
+-- invoices. Vendor submissions and every status change go through the API,
+-- which writes with the service role (bypassing RLS) and enforces the approval
+-- state machine. Leaving these open would let any authenticated user set
+-- status='Paid' directly and skip the whole workflow.
 
 -- Add RLS to profiles
 ALTER TABLE public.profiles ENABLE ROW LEVEL SECURITY;
@@ -88,10 +85,28 @@ CREATE POLICY "Authenticated users can select profiles"
     ON public.profiles FOR SELECT
     USING (auth.role() = 'authenticated');
 
--- Policy: Authenticated users can update profiles
-CREATE POLICY "Authenticated users can update profiles"
+-- Policy: Users can update ONLY their own profile (not anyone else's).
+CREATE POLICY "Users can update own profile"
     ON public.profiles FOR UPDATE
-    USING (auth.role() = 'authenticated');
+    USING (auth.uid() = id)
+    WITH CHECK (auth.uid() = id);
+
+-- Guard: a normal user can never change their own `role`. Role changes must be
+-- made with the service role (server / Supabase dashboard). Without this, a
+-- 'payer' could promote themselves to 'salam'.
+CREATE OR REPLACE FUNCTION public.prevent_profile_role_change()
+RETURNS TRIGGER AS $$
+BEGIN
+  IF NEW.role IS DISTINCT FROM OLD.role AND auth.role() <> 'service_role' THEN
+    RAISE EXCEPTION 'Role can only be changed by an administrator';
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+CREATE TRIGGER enforce_profile_role_immutable
+    BEFORE UPDATE ON public.profiles
+    FOR EACH ROW EXECUTE FUNCTION public.prevent_profile_role_change();
 
 -- Storage Configuration
 -- Note: Requires superuser/supabase_admin permissions if run outside Supabase SQL editor.
@@ -100,11 +115,9 @@ CREATE POLICY "Authenticated users can update profiles"
 INSERT INTO storage.buckets (id, name, public) VALUES ('invoices', 'invoices', false) ON CONFLICT (id) DO NOTHING;
 INSERT INTO storage.buckets (id, name, public) VALUES ('receipts', 'receipts', false) ON CONFLICT (id) DO NOTHING;
 
--- Storage policies for invoices bucket (Authenticated users can read/write, anonymous can upload)
-CREATE POLICY "Anyone can upload to invoices bucket"
-    ON storage.objects FOR INSERT
-    WITH CHECK (bucket_id = 'invoices');
-
+-- Storage policies for invoices bucket.
+-- Uploads happen through the API (service role), so no anonymous/public INSERT
+-- policy is needed — that would let anyone drop arbitrary files in the bucket.
 CREATE POLICY "Authenticated users can read invoices bucket"
     ON storage.objects FOR SELECT
     USING (bucket_id = 'invoices' AND auth.role() = 'authenticated');
@@ -116,11 +129,9 @@ CREATE POLICY "Authenticated users can delete from invoices bucket"
     ON storage.objects FOR DELETE
     USING (bucket_id = 'invoices' AND auth.role() = 'authenticated');
 
--- Storage policies for receipts bucket
-CREATE POLICY "Anyone can upload to receipts bucket"
-    ON storage.objects FOR INSERT
-    WITH CHECK (bucket_id = 'receipts');
-
+-- Storage policies for receipts bucket.
+-- Receipts are internal bank-transfer proofs uploaded by the API (service
+-- role) only — never directly by a browser client.
 CREATE POLICY "Authenticated users can read receipts bucket"
     ON storage.objects FOR SELECT
     USING (bucket_id = 'receipts' AND auth.role() = 'authenticated');
@@ -181,6 +192,11 @@ ALTER TABLE public.invoices
 
 CREATE INDEX IF NOT EXISTS idx_invoices_type_status ON public.invoices(type, status);
 CREATE INDEX IF NOT EXISTS idx_invoices_applied_to ON public.invoices(applied_to_invoice_id);
+
+-- One invoice/return number per brand per type. Backs the API's duplicate check
+-- so two submissions racing at once can't both slip through.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_invoices_brand_number_type
+    ON public.invoices (brand_name, invoice_number, type);
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- Payment authorization step
@@ -306,3 +322,50 @@ CREATE POLICY "Salam can select audit logs"
             SELECT id FROM public.profiles WHERE role = 'salam'
         )
     );
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- Atomic payment
+-- Applies return credits (Approved → Paid) and marks invoices Paid in a single
+-- transaction. If any count is off, it raises and the whole thing rolls back,
+-- so a payment can never be left half-recorded. Called by the receipts API.
+-- ─────────────────────────────────────────────────────────────────────────────
+CREATE OR REPLACE FUNCTION public.record_invoice_payment(
+    p_invoice_ids uuid[],
+    p_return_ids  uuid[],
+    p_receipt_url text
+) RETURNS void AS $$
+DECLARE
+    v_expected_invoices int := coalesce(array_length(p_invoice_ids, 1), 0);
+    v_expected_returns  int := coalesce(array_length(p_return_ids, 1), 0);
+    v_updated int;
+BEGIN
+    IF v_expected_invoices = 0 THEN
+        RAISE EXCEPTION 'At least one invoice is required';
+    END IF;
+
+    IF v_expected_returns > 0 THEN
+        UPDATE public.invoices
+            SET status = 'Paid', applied_to_invoice_id = p_invoice_ids[1]
+            WHERE id = ANY(p_return_ids)
+              AND type = 'return'
+              AND status = 'Approved'
+              AND applied_to_invoice_id IS NULL;
+        GET DIAGNOSTICS v_updated = ROW_COUNT;
+        IF v_updated <> v_expected_returns THEN
+            RAISE EXCEPTION 'Expected to apply % return credit(s) but matched %',
+                v_expected_returns, v_updated;
+        END IF;
+    END IF;
+
+    UPDATE public.invoices
+        SET status = 'Paid', receipt_url = p_receipt_url
+        WHERE id = ANY(p_invoice_ids)
+          AND type = 'invoice'
+          AND status = 'ReadyToPay';
+    GET DIAGNOSTICS v_updated = ROW_COUNT;
+    IF v_updated <> v_expected_invoices THEN
+        RAISE EXCEPTION 'Expected to pay % invoice(s) but matched %',
+            v_expected_invoices, v_updated;
+    END IF;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
