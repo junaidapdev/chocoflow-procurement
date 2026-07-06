@@ -6,14 +6,19 @@ import { usePathname, useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
 import { FileText, CheckSquare, CreditCard, Building2, LogOut, Menu, X, Banknote, History } from 'lucide-react';
 
-export default function Sidebar({ profile }: { profile: { role: string; full_name?: string; email?: string } }) {
+export default function Sidebar({ profile }: { profile: { role: string; full_name?: string | null; email?: string | null } }) {
   const pathname = usePathname();
   const router = useRouter();
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [loggingOut, setLoggingOut] = useState(false);
 
   const handleLogout = async () => {
-    await supabase.auth.signOut();
-    router.push('/login');
+    setLoggingOut(true);
+    // `scope: 'local'` clears the session in this browser without the extra
+    // network round-trip that the default global sign-out makes, so logout
+    // feels instant.
+    await supabase.auth.signOut({ scope: 'local' });
+    router.replace('/login');
     router.refresh();
   };
 
@@ -59,11 +64,12 @@ export default function Sidebar({ profile }: { profile: { role: string; full_nam
           <span className="text-sm font-bold text-gray-900 truncate">{profile.full_name || profile.email}</span>
           <span className="text-xs text-gray-500 uppercase tracking-wider font-semibold mt-0.5">{profile.role}</span>
           
-          <button 
+          <button
             onClick={handleLogout}
-            className="mt-4 flex items-center text-red-600 hover:text-red-700 transition-colors text-sm font-medium"
+            disabled={loggingOut}
+            className="mt-4 flex items-center text-red-600 hover:text-red-700 transition-colors text-sm font-medium disabled:opacity-60 disabled:cursor-not-allowed"
           >
-            <LogOut className="w-4 h-4 mr-2" /> Logout
+            <LogOut className="w-4 h-4 mr-2" /> {loggingOut ? 'Signing out…' : 'Logout'}
           </button>
         </div>
       </div>

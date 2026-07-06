@@ -2,7 +2,7 @@
 
 import { useState, useMemo } from 'react';
 import { format } from 'date-fns';
-import { supabase } from '@/lib/supabase';
+import { openSecureDocument } from '@/lib/storage';
 import {
   Check, X, FileText, UploadCloud, CreditCard, Loader2,
   ArrowUpRight, Download, Building2, ChevronDown, ChevronRight,
@@ -166,19 +166,6 @@ export default function PaymentsClient({
     });
   };
 
-  const openSecureDocument = async (pathOrUrl: string, bucket: string) => {
-    let path = pathOrUrl;
-    if (pathOrUrl.startsWith('http')) {
-      const parts = pathOrUrl.split(`/public/${bucket}/`);
-      if (parts.length > 1) path = parts[1];
-    }
-    const { data } = await supabase.storage.from(bucket).createSignedUrl(path, 60 * 60);
-    if (data?.signedUrl) {
-      window.open(data.signedUrl, '_blank');
-    } else {
-      alert('Could not secure file link.');
-    }
-  };
 
   const exportToCsv = () => {
     if (paidInvoices.length === 0) {

@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { format } from 'date-fns';
 import { Check, X, FileText, Loader2, MessageSquareX, RotateCcw } from 'lucide-react';
-import { supabase } from '@/lib/supabase';
+import { openSecureDocument } from '@/lib/storage';
 
 type Invoice = {
   id: string;
@@ -45,19 +45,6 @@ export default function DashboardClient({ initialInvoices }: { initialInvoices: 
   const [rejectionComment, setRejectionComment] = useState('');
   const [isProcessing, setIsProcessing] = useState<string | null>(null); // holds invoice ID
 
-  const openSecureDocument = async (pathOrUrl: string, bucket: string) => {
-    let path = pathOrUrl;
-    if (pathOrUrl.startsWith('http')) {
-      const parts = pathOrUrl.split(`/public/${bucket}/`);
-      if (parts.length > 1) path = parts[1];
-    }
-    const { data } = await supabase.storage.from(bucket).createSignedUrl(path, 60 * 60);
-    if (data?.signedUrl) {
-      window.open(data.signedUrl, '_blank');
-    } else {
-      alert('Could not secure file link.');
-    }
-  };
 
   const filteredInvoices = invoices.filter(inv => inv.status === activeTab);
   const pendingCount = invoices.filter(inv => inv.status === 'Pending').length;
@@ -78,7 +65,8 @@ export default function DashboardClient({ initialInvoices }: { initialInvoices: 
       });
 
       if (!res.ok) {
-        throw new Error('Server rejected the request');
+        const result = await res.json().catch(() => null);
+        throw new Error(result?.error || 'Server rejected the request');
       }
     } catch (err) {
       console.error('Error verifying:', err);
@@ -86,7 +74,7 @@ export default function DashboardClient({ initialInvoices }: { initialInvoices: 
       setInvoices(current =>
         current.map(inv => inv.id === id ? { ...inv, status: 'Pending' } : inv)
       );
-      alert('Failed to verify invoice. Please try again.');
+      alert(err instanceof Error ? err.message : 'Failed to verify invoice. Please try again.');
     } finally {
       setIsProcessing(null);
     }
@@ -123,7 +111,8 @@ export default function DashboardClient({ initialInvoices }: { initialInvoices: 
       });
 
       if (!res.ok) {
-        throw new Error('Server rejected the request');
+        const result = await res.json().catch(() => null);
+        throw new Error(result?.error || 'Server rejected the request');
       }
     } catch (err) {
       console.error('Error rejecting:', err);
@@ -135,7 +124,7 @@ export default function DashboardClient({ initialInvoices }: { initialInvoices: 
             : inv
         )
       );
-      alert('Failed to reject invoice. Please try again.');
+      alert(err instanceof Error ? err.message : 'Failed to reject invoice. Please try again.');
     } finally {
       setIsProcessing(null);
       setInvoiceToReject(null);

@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import { NextRequest, NextResponse } from 'next/server';
 import { logAuditEvent } from '@/lib/audit-log';
 import { requireRoles } from '@/lib/auth-context';
@@ -5,7 +6,13 @@ import { getSupabaseAdminClient } from '@/lib/supabase-admin';
 import { areUuids } from '@/lib/uuid';
 
 const MAX_FILE_SIZE = 5 * 1024 * 1024; // 5MB
-const ALLOWED_RECEIPT_TYPES = ['application/pdf', 'image/jpeg', 'image/png', 'image/webp'];
+const RECEIPT_EXT: Record<string, string> = {
+  'application/pdf': 'pdf',
+  'image/jpeg': 'jpg',
+  'image/png': 'png',
+  'image/webp': 'webp',
+};
+const ALLOWED_RECEIPT_TYPES = Object.keys(RECEIPT_EXT);
 
 type PaymentInvoice = {
   id: string;
@@ -85,8 +92,8 @@ function buildPaymentMetadata(input: {
 // POST - Upload a single receipt and mark one OR many invoices as Paid.
 //
 // Input (multipart/form-data):
-//   file          — receipt PDF/image (required)
-//   filePath      — storage path (required)
+//   file          — receipt PDF/image (required). The storage path is generated
+//                   server-side; any client-sent path is ignored.
 //   invoiceIds    — JSON array of invoice UUIDs (preferred; batch mode)
 //   invoiceId     — single invoice UUID (legacy; still accepted)
 //   appliedReturnIds — JSON array of return invoice UUIDs (optional)
@@ -115,7 +122,6 @@ export async function POST(request: NextRequest) {
     const formData = await request.formData();
 
     const file = formData.get('file') as File | null;
-    const filePath = formData.get('filePath') as string;
     const legacyInvoiceId = formData.get('invoiceId') as string | null;
     const invoiceIdsRaw = formData.get('invoiceIds') as string | null;
     const appliedReturnIdsRaw = formData.get('appliedReturnIds') as string | null;
@@ -142,24 +148,27 @@ export async function POST(request: NextRequest) {
       invoiceIds = [legacyInvoiceId];
     }
 
-    if (!file || !filePath || invoiceIds.length === 0) {
+    if (!file || invoiceIds.length === 0) {
       await logAuditEvent({
         action: file ? 'payment.denied' : 'payment.receipt_upload_failed',
         entityType: 'payment_batch',
         actor: auth.actor,
         outcome: file ? 'denied' : 'failure',
-        errorMessage: 'file, filePath, and at least one invoice ID are required',
+        errorMessage: 'file and at least one invoice ID are required',
         metadata: buildPaymentMetadata({
           invoiceIds,
-          receiptPath: filePath,
           file,
           reason: 'missing_required_fields',
         }),
         request,
       });
 
-      return NextResponse.json({ error: 'file, filePath, and at least one invoice ID are required' }, { status: 400 });
+      return NextResponse.json({ error: 'file and at least one invoice ID are required' }, { status: 400 });
     }
+
+    // Build the receipt storage path on the SERVER — never trust a client path,
+    // which (with upsert) could overwrite another receipt.
+    const receiptPath = `${randomUUID()}.${RECEIPT_EXT[file.type] || 'bin'}`;
 
     // --- Parse applied return IDs (optional) ---
     let appliedReturnIds: string[] = [];
@@ -174,7 +183,7 @@ export async function POST(request: NextRequest) {
           errorMessage: parsedReturnIds.error,
           metadata: buildPaymentMetadata({
             invoiceIds,
-            receiptPath: filePath,
+            receiptPath,
             file,
             reason: 'invalid_applied_return_ids_json',
           }),
@@ -199,7 +208,7 @@ export async function POST(request: NextRequest) {
         metadata: buildPaymentMetadata({
           invoiceIds,
           appliedReturnIds,
-          receiptPath: filePath,
+          receiptPath,
           file,
           reason: 'invalid_uuid',
         }),
@@ -220,7 +229,7 @@ export async function POST(request: NextRequest) {
         metadata: buildPaymentMetadata({
           invoiceIds,
           appliedReturnIds,
-          receiptPath: filePath,
+          receiptPath,
           file,
           reason: 'invalid_receipt_file_type',
         }),
@@ -240,7 +249,7 @@ export async function POST(request: NextRequest) {
         metadata: buildPaymentMetadata({
           invoiceIds,
           appliedReturnIds,
-          receiptPath: filePath,
+          receiptPath,
           file,
           reason: 'receipt_file_too_large',
         }),
@@ -276,7 +285,7 @@ export async function POST(request: NextRequest) {
           invoiceNumbers,
           grossTotal,
           appliedReturnIds,
-          receiptPath: filePath,
+          receiptPath,
           file,
           reason: missingInvoiceIds.length > 0 ? 'invoice_not_found' : 'invoice_fetch_failed',
         }),
@@ -301,7 +310,7 @@ export async function POST(request: NextRequest) {
           invoiceNumbers,
           grossTotal,
           appliedReturnIds,
-          receiptPath: filePath,
+          receiptPath,
           file,
           reason: 'invoice_not_ready_to_pay',
         }),
@@ -355,7 +364,7 @@ export async function POST(request: NextRequest) {
             returnNumbers,
             returnTotal,
             netPayable: Math.max(0, grossTotal - returnTotal),
-            receiptPath: filePath,
+            receiptPath,
             file,
             reason: returnFetchError
               ? 'return_credit_fetch_failed'
@@ -386,7 +395,7 @@ export async function POST(request: NextRequest) {
             returnNumbers,
             returnTotal,
             netPayable: Math.max(0, grossTotal - returnTotal),
-            receiptPath: filePath,
+            receiptPath,
             file,
             reason: 'return_credit_exceeds_gross_total',
           }),
@@ -403,7 +412,7 @@ export async function POST(request: NextRequest) {
     const buffer = Buffer.from(await file.arrayBuffer());
     const { error: uploadError } = await supabaseAdmin.storage
       .from('receipts')
-      .upload(filePath, buffer, { upsert: true, contentType: file.type });
+      .upload(receiptPath, buffer, { upsert: true, contentType: file.type });
 
     if (uploadError) {
       console.error('Receipt upload error:', uploadError);
@@ -423,7 +432,7 @@ export async function POST(request: NextRequest) {
           returnNumbers,
           returnTotal,
           netPayable,
-          receiptPath: filePath,
+          receiptPath,
           file,
           reason: 'storage_upload_failed',
         }),
@@ -436,89 +445,22 @@ export async function POST(request: NextRequest) {
     // --- 2. Get public URL ---
     const { data: urlData } = supabaseAdmin.storage
       .from('receipts')
-      .getPublicUrl(filePath);
+      .getPublicUrl(receiptPath);
 
-    // --- 3. Apply selected return credits first, then mark invoices as paid.
-    // Without a database transaction, this order lets us reject invoice update
-    // failures while attempting to roll return credits back to Approved.
-    let appliedReturnRows: { id: string; invoice_number: string }[] = [];
-    if (appliedReturnIds.length > 0) {
-      const { data: updatedReturns, error: returnUpdateError } = await supabaseAdmin
-        .from('invoices')
-        .update({ status: 'Paid', applied_to_invoice_id: invoiceIds[0] })
-        .in('id', appliedReturnIds)
-        .eq('type', 'return')
-        .eq('status', 'Approved')
-        .is('applied_to_invoice_id', null)
-        .select('id, invoice_number');
+    // --- 3. Apply return credits and mark invoices Paid in ONE transaction.
+    // record_invoice_payment (defined in supabase/schema.sql) does both updates
+    // atomically and raises if any row count is off, so Postgres rolls the whole
+    // thing back — a payment can never be left half-applied.
+    const { error: paymentError } = await supabaseAdmin.rpc('record_invoice_payment', {
+      p_invoice_ids: invoiceIds,
+      p_return_ids: appliedReturnIds,
+      p_receipt_url: urlData.publicUrl,
+    });
 
-      appliedReturnRows = updatedReturns || [];
-
-      if (returnUpdateError || appliedReturnRows.length !== appliedReturnIds.length) {
-        if (appliedReturnRows.length > 0) {
-          await supabaseAdmin
-            .from('invoices')
-            .update({ status: 'Approved', applied_to_invoice_id: null })
-            .in('id', appliedReturnRows.map(row => row.id))
-            .eq('applied_to_invoice_id', invoiceIds[0]);
-        }
-
-        await supabaseAdmin.storage.from('receipts').remove([filePath]);
-        await logAuditEvent({
-          action: 'payment.database_update_failed',
-          entityType: 'payment_batch',
-          entityId: invoices[0]?.id || null,
-          entityLabel: invoiceNumbers[0] || null,
-          actor: auth.actor,
-          outcome: 'failure',
-          errorMessage: returnUpdateError?.message || 'Could not apply all selected return credits',
-          metadata: buildPaymentMetadata({
-            invoiceIds,
-            invoiceNumbers,
-            grossTotal,
-            appliedReturnIds,
-            returnNumbers,
-            returnTotal,
-            netPayable,
-            receiptPath: filePath,
-            receiptPublicUrl: urlData.publicUrl,
-            file,
-            reason: 'return_credit_update_failed',
-          }),
-          request,
-        });
-
-        return NextResponse.json(
-          { error: returnUpdateError?.message || 'Could not apply all selected return credits' },
-          { status: 500 }
-        );
-      }
-    }
-
-    // --- 4. Update ALL invoices in the batch with the same receipt URL ---
-    const { data: paidRows, error: dbError } = await supabaseAdmin
-      .from('invoices')
-      .update({
-        status: 'Paid',
-        receipt_url: urlData.publicUrl,
-      })
-      .in('id', invoiceIds)
-      .eq('type', 'invoice')
-      .eq('status', 'ReadyToPay')
-      .select('id, invoice_number');
-
-    if (dbError || !paidRows || paidRows.length !== invoiceIds.length) {
-      console.error('DB update error after receipt upload:', dbError);
-      // Cleanup: remove the uploaded receipt since DB update failed.
-      await supabaseAdmin.storage.from('receipts').remove([filePath]);
-
-      if (appliedReturnRows.length > 0) {
-        await supabaseAdmin
-          .from('invoices')
-          .update({ status: 'Approved', applied_to_invoice_id: null })
-          .in('id', appliedReturnRows.map(row => row.id))
-          .eq('applied_to_invoice_id', invoiceIds[0]);
-      }
+    if (paymentError) {
+      console.error('Atomic payment failed:', paymentError);
+      // Storage isn't transactional — remove the receipt we just uploaded.
+      await supabaseAdmin.storage.from('receipts').remove([receiptPath]);
 
       await logAuditEvent({
         action: 'payment.database_update_failed',
@@ -527,7 +469,7 @@ export async function POST(request: NextRequest) {
         entityLabel: invoiceNumbers[0] || null,
         actor: auth.actor,
         outcome: 'failure',
-        errorMessage: dbError?.message || 'Could not mark all selected invoices as paid',
+        errorMessage: paymentError.message,
         metadata: buildPaymentMetadata({
           invoiceIds,
           invoiceNumbers,
@@ -536,16 +478,16 @@ export async function POST(request: NextRequest) {
           returnNumbers,
           returnTotal,
           netPayable,
-          receiptPath: filePath,
+          receiptPath,
           receiptPublicUrl: urlData.publicUrl,
           file,
-          reason: 'invoice_payment_update_failed',
+          reason: 'atomic_payment_failed',
         }),
         request,
       });
 
       return NextResponse.json(
-        { error: `Payment could not be recorded. The receipt was not saved. Please try again. (${dbError?.message || 'Not all invoices could be marked as paid'})` },
+        { error: `Payment could not be recorded. The receipt was not saved. Please try again. (${paymentError.message})` },
         { status: 500 }
       );
     }
@@ -574,7 +516,7 @@ export async function POST(request: NextRequest) {
           returnNumbers,
           returnTotal,
           netPayable,
-          receiptPath: filePath,
+          receiptPath,
           receiptPublicUrl: urlData.publicUrl,
           file,
         }),
@@ -606,7 +548,7 @@ export async function POST(request: NextRequest) {
         returnNumbers,
         returnTotal,
         netPayable,
-        receiptPath: filePath,
+        receiptPath,
         receiptPublicUrl: urlData.publicUrl,
         file,
       }),
