@@ -21,6 +21,7 @@ type Invoice = {
   created_at: string;
   updated_at?: string;
   type?: 'invoice' | 'return';
+  applied_to_invoice_id?: string | null;
   vendor_notified_at?: string | null;
   salam_notified_at?: string | null;
 };
@@ -34,12 +35,14 @@ type BrandRecord = {
 export default function FinanceClient({
   initialInvoices,
   brands,
+  returns,
 }: {
   initialInvoices: Invoice[];
   brands: BrandRecord[];
+  returns: Invoice[];
 }) {
   const [invoices, setInvoices] = useState<Invoice[]>(initialInvoices);
-  const [activeTab, setActiveTab] = useState<'To Authorize' | 'Awaiting Payment' | 'History'>('To Authorize');
+  const [activeTab, setActiveTab] = useState<'To Authorize' | 'Awaiting Payment' | 'History' | 'Return Credits'>('To Authorize');
   const [authorizingId, setAuthorizingId] = useState<string | null>(null);
   const [notifyingId, setNotifyingId] = useState<string | null>(null);
 
@@ -139,6 +142,42 @@ Kayan Sweets Team`;
     [awaitingPayment]
   );
 
+  // Read-only reconciliation data. Applied return credits are linked to the
+  // invoice they reduced via applied_to_invoice_id. When several invoices are
+  // paid in one batch, the payer's credits are linked to the first invoice of
+  // that batch — so treat "Credit Applied" as per-payment, not strictly
+  // per-invoice.
+  const creditsByInvoiceId = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const r of returns) {
+      if (r.status === 'Paid' && r.applied_to_invoice_id) {
+        map.set(
+          r.applied_to_invoice_id,
+          (map.get(r.applied_to_invoice_id) || 0) + Number(r.amount)
+        );
+      }
+    }
+    return map;
+  }, [returns]);
+
+  const availableReturns = useMemo(
+    () => returns.filter(r => r.status === 'Approved'),
+    [returns]
+  );
+
+  const totalAvailableCredit = useMemo(
+    () => availableReturns.reduce((sum, r) => sum + Number(r.amount), 0),
+    [availableReturns]
+  );
+
+  // For the Return Credits tab: resolve which invoice a consumed credit was
+  // applied against, so the accountant can trace it without leaving the page.
+  const invoiceNumberById = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const inv of invoices) map.set(inv.id, inv.invoice_number);
+    return map;
+  }, [invoices]);
+
   const handleAuthorize = async (inv: Invoice) => {
     if (!confirm(`Authorize SAR ${Number(inv.amount).toLocaleString(undefined, { minimumFractionDigits: 2 })} payment to ${inv.vendor_name} (#${inv.invoice_number})?\n\nThis will release the invoice to the payments team.`)) {
       return;
@@ -168,17 +207,22 @@ Kayan Sweets Team`;
       return;
     }
 
-    const headers = ['Invoice Number', 'Vendor Name', 'Brand Name', 'Branch', 'Amount (SAR)', 'Invoice Date', 'Paid Date', 'Receipt URL'];
-    const rows = paidInvoices.map(inv => [
-      inv.invoice_number,
-      inv.vendor_name,
-      inv.brand_name,
-      inv.branch_id,
-      inv.amount.toFixed(2),
-      format(new Date(inv.invoice_date), 'yyyy-MM-dd'),
-      inv.updated_at ? format(new Date(inv.updated_at), 'yyyy-MM-dd HH:mm') : '',
-      inv.receipt_url || '',
-    ]);
+    const headers = ['Invoice Number', 'Vendor Name', 'Brand Name', 'Branch', 'Amount (SAR)', 'Credit Applied (SAR)', 'Net Paid (SAR)', 'Invoice Date', 'Paid Date', 'Receipt URL'];
+    const rows = paidInvoices.map(inv => {
+      const credit = creditsByInvoiceId.get(inv.id) || 0;
+      return [
+        inv.invoice_number,
+        inv.vendor_name,
+        inv.brand_name,
+        inv.branch_id,
+        inv.amount.toFixed(2),
+        credit.toFixed(2),
+        (Number(inv.amount) - credit).toFixed(2),
+        format(new Date(inv.invoice_date), 'yyyy-MM-dd'),
+        inv.updated_at ? format(new Date(inv.updated_at), 'yyyy-MM-dd HH:mm') : '',
+        inv.receipt_url || '',
+      ];
+    });
 
     const csvContent = [
       headers.join(','),
@@ -284,7 +328,104 @@ Kayan Sweets Team`;
           >
             Paid History
           </button>
+          <button
+            onClick={() => setActiveTab('Return Credits')}
+            className={`px-6 py-4 text-sm font-semibold flex items-center border-b-2 transition-colors whitespace-nowrap ${activeTab === 'Return Credits' ? 'border-rose-500 text-rose-700 bg-white' : 'border-transparent text-gray-500 hover:text-gray-700 hover:bg-gray-50'}`}
+          >
+            Return Credits
+            {availableReturns.length > 0 && (
+              <span className="ml-2 bg-rose-100 text-rose-700 py-0.5 px-2.5 rounded-full text-xs">
+                {availableReturns.length}
+              </span>
+            )}
+          </button>
         </div>
+
+        {activeTab === 'Return Credits' ? (
+          /* Read-only view: return credits are managed by the payments team;
+             this exists so the accountant can reconcile net transfers. */
+          <div>
+            <div className="px-6 py-4 bg-rose-50/60 border-b border-rose-100 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+              <p className="text-xs text-rose-800">
+                <span className="font-semibold">View only.</span>{' '}
+                Return credits are applied by the payments team when paying invoices of the same brand.
+                Amounts here reduce the actual bank transfer of the payment they are applied to.
+              </p>
+              <span className="text-xs font-semibold text-rose-700 whitespace-nowrap">
+                Available: {totalAvailableCredit.toLocaleString(undefined, { minimumFractionDigits: 2 })} SAR
+              </span>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-sm whitespace-nowrap">
+                <thead className="bg-white text-gray-500 font-medium border-b border-gray-100 uppercase text-xs tracking-wider">
+                  <tr>
+                    <th className="px-6 py-4">Return Ref No.</th>
+                    <th className="px-6 py-4">Vendor</th>
+                    <th className="px-6 py-4">Brand/Branch</th>
+                    <th className="px-6 py-4 text-right">Amount (SAR)</th>
+                    <th className="px-6 py-4 text-center">Status</th>
+                    <th className="px-6 py-4 text-center">Return Bill</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  {returns.length === 0 ? (
+                    <tr>
+                      <td colSpan={6} className="px-6 py-16 text-center text-gray-400">
+                        <div className="flex flex-col items-center">
+                          <CreditCard className="w-8 h-8 text-gray-300 mb-2" />
+                          <p>No return credits yet.</p>
+                        </div>
+                      </td>
+                    </tr>
+                  ) : (
+                    returns.map((r) => (
+                      <tr key={r.id} className="hover:bg-gray-50 transition-colors">
+                        <td className="px-6 py-4 font-mono text-gray-900 text-xs">#{r.invoice_number}</td>
+                        <td className="px-6 py-4">
+                          <div className="font-semibold text-gray-900">{r.vendor_name}</div>
+                          <div className="text-gray-500 text-xs mt-0.5">{r.vendor_email}</div>
+                        </td>
+                        <td className="px-6 py-4 text-gray-800">
+                          <span className="font-medium mr-2">{r.brand_name}</span>
+                          <span className="text-xs text-gray-400">({r.branch_id})</span>
+                        </td>
+                        <td className="px-6 py-4 text-right font-bold text-rose-600">
+                          −{Number(r.amount).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                        </td>
+                        <td className="px-6 py-4 text-center">
+                          {r.status === 'Approved' ? (
+                            <span className="text-xs font-semibold text-amber-700 bg-amber-50 px-2.5 py-1 rounded-md border border-amber-100">
+                              AVAILABLE
+                            </span>
+                          ) : (
+                            <div className="flex flex-col items-center gap-1">
+                              <span className="text-xs font-semibold text-emerald-700 bg-emerald-50 px-2.5 py-1 rounded-md">
+                                APPLIED
+                              </span>
+                              {r.applied_to_invoice_id && (
+                                <span className="text-[10px] text-gray-400 font-mono">
+                                  → inv #{invoiceNumberById.get(r.applied_to_invoice_id) || '…'}
+                                </span>
+                              )}
+                            </div>
+                          )}
+                        </td>
+                        <td className="px-6 py-4 text-center">
+                          {r.invoice_url && (
+                            <button onClick={() => openSecureDocument(r.invoice_url, 'invoices')} className="text-xs text-indigo-600 hover:text-indigo-800 hover:underline inline-flex items-center font-medium cursor-pointer">
+                              <FileText className="w-3.5 h-3.5 mr-1" /> PDF
+                            </button>
+                          )}
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        ) : (
+        <>{/* invoice tabs */}
 
         {/* Desktop Table */}
         <div className="overflow-x-auto hidden lg:block">
@@ -328,6 +469,20 @@ Kayan Sweets Team`;
                       <div className="font-bold text-gray-900 border-b border-gray-100 pb-0.5 inline-block">
                         {inv.amount.toLocaleString(undefined, { minimumFractionDigits: 2 })}
                       </div>
+                      {(() => {
+                        const credit = creditsByInvoiceId.get(inv.id) || 0;
+                        if (credit <= 0) return null;
+                        return (
+                          <div className="mt-1 text-xs">
+                            <div className="text-rose-600 font-medium">
+                              − {credit.toLocaleString(undefined, { minimumFractionDigits: 2 })} credit
+                            </div>
+                            <div className="text-gray-500">
+                              Net paid: <span className="font-semibold text-gray-700">{(Number(inv.amount) - credit).toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                            </div>
+                          </div>
+                        );
+                      })()}
                     </td>
                     <td className="px-6 py-4 text-center">
                       <div className="flex justify-center space-x-3">
@@ -432,6 +587,20 @@ Kayan Sweets Team`;
                       {inv.amount.toLocaleString(undefined, { minimumFractionDigits: 2 })}
                     </span>
                     <span className="text-xs text-gray-500 font-normal ml-1">SAR</span>
+                    {(() => {
+                      const credit = creditsByInvoiceId.get(inv.id) || 0;
+                      if (credit <= 0) return null;
+                      return (
+                        <div className="mt-0.5 text-xs">
+                          <div className="text-rose-600 font-medium whitespace-nowrap">
+                            − {credit.toLocaleString(undefined, { minimumFractionDigits: 2 })} credit
+                          </div>
+                          <div className="text-gray-500 whitespace-nowrap">
+                            Net: <span className="font-semibold text-gray-700">{(Number(inv.amount) - credit).toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                          </div>
+                        </div>
+                      );
+                    })()}
                   </div>
                 </div>
 
@@ -515,6 +684,8 @@ Kayan Sweets Team`;
             ))
           )}
         </div>
+        </>
+        )}
       </div>
     </div>
   );
