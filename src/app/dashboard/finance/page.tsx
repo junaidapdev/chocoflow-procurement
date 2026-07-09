@@ -27,6 +27,20 @@ export default async function DashboardFinancePage() {
     console.error('Error fetching brands:', brandsError);
   }
 
+  // Read-only visibility for the accountant: return credits that are either
+  // available (Approved, not yet applied) or already applied to a payment
+  // (Paid). Used to show net paid amounts in the history and a Returns tab.
+  const { data: returnsData, error: returnsError } = await supabase
+    .from('invoices')
+    .select('*')
+    .eq('type', 'return')
+    .in('status', ['Approved', 'Paid'])
+    .order('created_at', { ascending: false });
+
+  if (returnsError) {
+    console.error('Error fetching return credits:', returnsError);
+  }
+
   return (
     <div className="p-8">
       <div className="max-w-7xl mx-auto space-y-6">
@@ -35,7 +49,11 @@ export default async function DashboardFinancePage() {
           <p className="text-gray-500 mt-1">Authorize approved invoices for the payments team to transfer.</p>
         </div>
 
-        <FinanceClient initialInvoices={invoices || []} brands={brandsData || []} />
+        <FinanceClient
+          initialInvoices={invoices || []}
+          brands={brandsData || []}
+          returns={returnsData || []}
+        />
       </div>
     </div>
   );
