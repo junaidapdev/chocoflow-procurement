@@ -1,6 +1,10 @@
 import { createClient } from '@/lib/supabase-server';
 import { redirect } from 'next/navigation';
-import AuditLogsClient, { type AuditLog } from './AuditLogsClient';
+import AuditLogsClient, { type AuditLog, type AuditLogStatus } from './AuditLogsClient';
+import { getAuditLogHealth } from '@/lib/audit-log';
+
+// PostgREST reports a missing table as PGRST205; Postgres itself uses 42P01.
+const MISSING_TABLE_CODES = new Set(['PGRST205', '42P01']);
 
 export default async function DashboardAuditLogsPage() {
   const supabase = createClient();
@@ -29,9 +33,21 @@ export default async function DashboardAuditLogsPage() {
     .order('created_at', { ascending: false })
     .limit(300);
 
+  // A failed read used to be logged and then dropped, so the page rendered an
+  // empty list — indistinguishable from "nothing has happened yet". That is
+  // exactly how a months-long outage went unnoticed. Pass the failure through.
   if (error) {
     console.error('Error fetching audit logs:', error);
   }
+
+  const writeHealth = getAuditLogHealth();
+  const status: AuditLogStatus = {
+    readError: error?.message || null,
+    tableMissing:
+      MISSING_TABLE_CODES.has(error?.code || '') || writeHealth.tableMissing,
+    writeFailures: writeHealth.failures,
+    lastWriteError: writeHealth.lastError,
+  };
 
   return (
     <div className="p-8 text-black">
@@ -41,7 +57,7 @@ export default async function DashboardAuditLogsPage() {
           <p className="text-gray-500 mt-1">Recent dashboard, payment, invoice, brand, and notification events.</p>
         </div>
 
-        <AuditLogsClient initialLogs={(logs || []) as AuditLog[]} />
+        <AuditLogsClient initialLogs={(logs || []) as AuditLog[]} status={status} />
       </div>
     </div>
   );
