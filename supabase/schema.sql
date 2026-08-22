@@ -229,6 +229,34 @@ ALTER TABLE public.invoices
     ADD COLUMN IF NOT EXISTS vendor_notified_at TIMESTAMPTZ,
     ADD COLUMN IF NOT EXISTS salam_notified_at TIMESTAMPTZ;
 
+-- ─────────────────────────────────────────────────────────────────────────────
+-- Payment date, bank account & batch id
+-- payment_date     — the day money actually left the bank, typed by the payer.
+--                    DATE because it reconciles against bank statements, which
+--                    settle per day. Never derived from updated_at: an UPDATE
+--                    trigger bumps that column on every later write (e.g. a
+--                    notification), which would silently move the payment date.
+-- bank_account     — last 4 digits of the company account used. Only the last 4
+--                    on purpose; full account numbers do not belong here. Not a
+--                    CHECK constraint — the valid set lives in
+--                    src/lib/constants.ts so accounts can change without a
+--                    migration, the same way BRANCHES does.
+-- payment_batch_id — one bank transfer usually covers several invoices. This
+--                    makes that batch addressable instead of merely implied by
+--                    a shared receipt_url.
+-- ─────────────────────────────────────────────────────────────────────────────
+ALTER TABLE public.invoices
+    ADD COLUMN IF NOT EXISTS payment_date DATE,
+    ADD COLUMN IF NOT EXISTS bank_account TEXT,
+    ADD COLUMN IF NOT EXISTS payment_batch_id UUID;
+
+CREATE INDEX IF NOT EXISTS idx_invoices_payment_date
+    ON public.invoices(payment_date DESC);
+
+CREATE INDEX IF NOT EXISTS idx_invoices_payment_batch
+    ON public.invoices(payment_batch_id);
+
+
 -- Function to cascade brand_name updates to invoices table
 CREATE OR REPLACE FUNCTION public.cascade_brand_name_update()
 RETURNS TRIGGER AS $$
@@ -323,29 +351,56 @@ CREATE POLICY "Salam can select audit logs"
         )
     );
 
+
 -- ─────────────────────────────────────────────────────────────────────────────
 -- Atomic payment
 -- Applies return credits (Approved → Paid) and marks invoices Paid in a single
--- transaction. If any count is off, it raises and the whole thing rolls back,
+-- transaction, stamping every affected row with the payment date, bank account
+-- and batch id. If any count is off, it raises and the whole thing rolls back,
 -- so a payment can never be left half-recorded. Called by the receipts API.
 -- ─────────────────────────────────────────────────────────────────────────────
 CREATE OR REPLACE FUNCTION public.record_invoice_payment(
-    p_invoice_ids uuid[],
-    p_return_ids  uuid[],
-    p_receipt_url text
+    p_invoice_ids  uuid[],
+    p_return_ids   uuid[],
+    p_receipt_url  text,
+    p_payment_date date,
+    p_bank_account text,
+    p_batch_id     uuid
 ) RETURNS void AS $$
 DECLARE
-    v_expected_invoices int := coalesce(array_length(p_invoice_ids, 1), 0);
-    v_expected_returns  int := coalesce(array_length(p_return_ids, 1), 0);
-    v_updated int;
+    v_expected_invoices int  := coalesce(array_length(p_invoice_ids, 1), 0);
+    v_expected_returns  int  := coalesce(array_length(p_return_ids, 1), 0);
+    v_today             date := (now() AT TIME ZONE 'Asia/Riyadh')::date;
+    v_updated           int;
 BEGIN
     IF v_expected_invoices = 0 THEN
         RAISE EXCEPTION 'At least one invoice is required';
     END IF;
 
+    IF p_payment_date IS NULL THEN
+        RAISE EXCEPTION 'Payment date is required';
+    END IF;
+
+    -- Compared in Riyadh time, not UTC. A payer entering "today" at 1am local
+    -- is still on yesterday's UTC date, and a naive check would reject it.
+    IF p_payment_date > v_today THEN
+        RAISE EXCEPTION 'Payment date % cannot be in the future (today is % in Riyadh)',
+            p_payment_date, v_today;
+    END IF;
+
+    IF p_bank_account IS NULL OR btrim(p_bank_account) = '' THEN
+        RAISE EXCEPTION 'Bank account is required';
+    END IF;
+
+    -- Return credits get the payment date and batch, but never a bank account:
+    -- applying a credit moves no money out of any account, so tagging one would
+    -- inflate per-account payout totals.
     IF v_expected_returns > 0 THEN
         UPDATE public.invoices
-            SET status = 'Paid', applied_to_invoice_id = p_invoice_ids[1]
+            SET status                = 'Paid',
+                applied_to_invoice_id = p_invoice_ids[1],
+                payment_date          = p_payment_date,
+                payment_batch_id      = p_batch_id
             WHERE id = ANY(p_return_ids)
               AND type = 'return'
               AND status = 'Approved'
@@ -358,7 +413,11 @@ BEGIN
     END IF;
 
     UPDATE public.invoices
-        SET status = 'Paid', receipt_url = p_receipt_url
+        SET status           = 'Paid',
+            receipt_url      = p_receipt_url,
+            payment_date     = p_payment_date,
+            bank_account     = p_bank_account,
+            payment_batch_id = p_batch_id
         WHERE id = ANY(p_invoice_ids)
           AND type = 'invoice'
           AND status = 'ReadyToPay';

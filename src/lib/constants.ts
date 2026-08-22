@@ -72,3 +72,27 @@ export const BRAND_FOLDER_MAP: Record<string, string> = {
 // Convenience: returns the English brand name if mapped, else null.
 export const getBrandEnglishName = (brandArabic: string): string | null =>
   BRAND_FOLDER_MAP[brandArabic] || null;
+
+// Company bank accounts money is paid out from, identified by the last 4
+// digits of the account number. We deliberately store nothing more — the last
+// 4 is enough to tell the accounts apart, and full account numbers have no
+// reason to live in this database.
+//
+// This is the single source of truth: the payments form renders the dropdown
+// from it and the receipts API validates against it, the same way BRANCHES
+// works. Adding an account here needs no migration.
+export const BANK_ACCOUNTS = [
+  { code: '4000', label: 'Account ••••4000' },
+  { code: '8000', label: 'Account ••••8000' },
+  { code: '9000', label: 'Account ••••9000' },
+] as const;
+
+export const BANK_ACCOUNT_CODES: readonly string[] = BANK_ACCOUNTS.map(a => a.code);
+
+export const isBankAccount = (value: unknown): value is string =>
+  typeof value === 'string' && BANK_ACCOUNT_CODES.includes(value);
+
+// Display helper for history tables and exports. Payments made before this
+// feature existed have no account on record.
+export const getBankAccountLabel = (code: string | null | undefined): string =>
+  BANK_ACCOUNTS.find(a => a.code === code)?.label ?? (code ? `Account ••••${code}` : 'Not recorded');

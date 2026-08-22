@@ -4,6 +4,8 @@ import { useState, useMemo } from 'react';
 import { format } from 'date-fns';
 import { CheckSquare, Square, FileText, CheckCircle2, TrendingUp, Filter, Loader2, MessageSquareX, RotateCcw } from 'lucide-react';
 import { openSecureDocument } from '@/lib/storage';
+import { getBankAccountLabel } from '@/lib/constants';
+import { formatPaymentDate } from '@/lib/dates';
 
 type Invoice = {
   id: string;
@@ -17,6 +19,8 @@ type Invoice = {
   vendor_name: string;
   created_at: string;
   updated_at: string;
+  payment_date?: string | null;
+  bank_account?: string | null;
   type?: 'invoice' | 'return';
   rejection_comment?: string | null;
 };
@@ -269,7 +273,7 @@ export default function ApproveClient({ initialInvoices }: { initialInvoices: In
                   <th className="px-6 py-4">Brand/Branch</th>
                   <th className="px-6 py-4">Ref #</th>
                   <th className="px-6 py-4">Amount (SAR)</th>
-                  <th className="px-6 py-4">Status Updated</th>
+                  <th className="px-6 py-4">{activeFilter === 'Paid' ? 'Paid' : 'Status Updated'}</th>
                   <th className="px-6 py-4 text-center">Action</th>
                 </tr>
               </thead>
@@ -312,7 +316,16 @@ export default function ApproveClient({ initialInvoices }: { initialInvoices: In
                         {inv.amount.toLocaleString(undefined, { minimumFractionDigits: 2 })}
                       </td>
                       <td className="px-6 py-4 text-gray-500 text-xs">
-                        {format(new Date(inv.updated_at), 'MMM dd, p')}
+                        {activeFilter === 'Paid' ? (
+                          <>
+                            <div className={inv.payment_date ? 'text-gray-900 font-medium' : 'text-gray-400'}>
+                              {formatPaymentDate(inv.payment_date)}
+                            </div>
+                            <div className="text-gray-500 mt-0.5">{getBankAccountLabel(inv.bank_account)}</div>
+                          </>
+                        ) : (
+                          format(new Date(inv.updated_at), 'MMM dd, p')
+                        )}
                       </td>
                       <td className="px-6 py-4 text-center">
                         {activeFilter === 'Verified' ? (
@@ -402,7 +415,13 @@ export default function ApproveClient({ initialInvoices }: { initialInvoices: In
                     <button onClick={() => openSecureDocument(inv.invoice_url, 'invoices')} className={`flex items-center ${isReturn ? 'text-rose-600' : 'text-indigo-600'}`}>
                       <FileText className="w-3 h-3 mr-1" />{inv.invoice_number}
                     </button>
-                    <span>Updated {format(new Date(inv.updated_at), 'MMM dd, p')}</span>
+                    {activeFilter === 'Paid' ? (
+                      <span>
+                        Paid {formatPaymentDate(inv.payment_date)} · {getBankAccountLabel(inv.bank_account)}
+                      </span>
+                    ) : (
+                      <span>Updated {format(new Date(inv.updated_at), 'MMM dd, p')}</span>
+                    )}
                   </div>
                   <div className="flex justify-end pt-1">
                     {activeFilter === 'Verified' ? (
