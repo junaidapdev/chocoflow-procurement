@@ -7,7 +7,8 @@ import {
   Check, X, FileText, UploadCloud, CreditCard, Loader2,
   ArrowUpRight, Download, Building2, ChevronDown, ChevronRight,
 } from 'lucide-react';
-import { getBrandEnglishName } from '@/lib/constants';
+import { BANK_ACCOUNTS, getBankAccountLabel, getBrandEnglishName } from '@/lib/constants';
+import { formatPaymentDate, riyadhToday, validatePaymentDate } from '@/lib/dates';
 
 type Invoice = {
   id: string;
@@ -24,6 +25,8 @@ type Invoice = {
   created_at: string;
   updated_at?: string;
   type?: 'invoice' | 'return';
+  payment_date?: string | null;
+  bank_account?: string | null;
 };
 
 type VendorGroup = {
@@ -55,6 +58,14 @@ export default function PaymentsClient({
   const [fileError, setFileError] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
   const [selectedReturnIds, setSelectedReturnIds] = useState<Set<string>>(new Set());
+
+  // Payment details. The date defaults to today in Riyadh, but the payer can
+  // back-date it — the transfer often happens days before anyone gets around to
+  // uploading the receipt, and it's the transfer date that has to match the
+  // bank statement.
+  const [paymentDate, setPaymentDate] = useState(riyadhToday());
+  const [bankAccount, setBankAccount] = useState('');
+  const [formError, setFormError] = useState('');
 
   // Derived: pending vs paid
   const toPayInvoices = useMemo(() => invoices.filter(i => i.status === 'ReadyToPay'), [invoices]);
@@ -172,7 +183,7 @@ export default function PaymentsClient({
       alert('No paid invoices to export.');
       return;
     }
-    const headers = ['Invoice Number', 'Vendor Name', 'Brand Name', 'Branch', 'Amount (SAR)', 'Invoice Date', 'Paid Date', 'Receipt URL'];
+    const headers = ['Invoice Number', 'Vendor Name', 'Brand Name', 'Branch', 'Amount (SAR)', 'Invoice Date', 'Paid Date', 'Bank Account', 'Receipt URL'];
     const rows = paidInvoices.map(inv => [
       inv.invoice_number,
       inv.vendor_name,
@@ -180,7 +191,9 @@ export default function PaymentsClient({
       inv.branch_id,
       inv.amount.toFixed(2),
       format(new Date(inv.invoice_date), 'yyyy-MM-dd'),
-      inv.updated_at ? format(new Date(inv.updated_at), 'yyyy-MM-dd HH:mm') : '',
+      // The recorded transfer date — not updated_at, which any later write bumps.
+      inv.payment_date || '',
+      inv.bank_account || '',
       inv.receipt_url || '',
     ]);
     const csvContent = [
@@ -202,6 +215,9 @@ export default function PaymentsClient({
     if (selectedIds.size === 0) return;
     setReceiptFile(null);
     setFileError('');
+    setFormError('');
+    setPaymentDate(riyadhToday());
+    setBankAccount('');
     setSelectedReturnIds(new Set());
     setPayModalOpen(true);
   };
@@ -222,8 +238,21 @@ export default function PaymentsClient({
     e.preventDefault();
     if (selectedInvoices.length === 0 || !receiptFile) return;
 
+    // Same rules the API enforces, checked here so the payer gets the message
+    // before a 5MB upload rather than after it.
+    const dateProblem = validatePaymentDate(paymentDate);
+    if (dateProblem) {
+      setFormError(dateProblem);
+      return;
+    }
+    if (!bankAccount) {
+      setFormError('Select which company account the transfer came from.');
+      return;
+    }
+
     setIsProcessing(true);
     setFileError('');
+    setFormError('');
 
     try {
       const fileExt = receiptFile.name.split('.').pop();
@@ -236,6 +265,8 @@ export default function PaymentsClient({
       formData.append('file', receiptFile);
       formData.append('filePath', filePath);
       formData.append('invoiceIds', JSON.stringify(invoiceIds));
+      formData.append('paymentDate', paymentDate);
+      formData.append('bankAccount', bankAccount);
       if (appliedIds.length > 0) {
         formData.append('appliedReturnIds', JSON.stringify(appliedIds));
       }
@@ -251,7 +282,13 @@ export default function PaymentsClient({
       const paidIdSet = new Set(invoiceIds);
       setInvoices(current => current.map(inv =>
         paidIdSet.has(inv.id)
-          ? { ...inv, status: 'Paid', receipt_url: result.publicUrl }
+          ? {
+              ...inv,
+              status: 'Paid',
+              receipt_url: result.publicUrl,
+              payment_date: paymentDate,
+              bank_account: bankAccount,
+            }
           : inv
       ));
 
@@ -544,6 +581,7 @@ export default function PaymentsClient({
                   <th className="px-6 py-4">Brand/Branch</th>
                   <th className="px-6 py-4">Invoice Info</th>
                   <th className="px-6 py-4 text-right">Amount (SAR)</th>
+                  <th className="px-6 py-4">Paid</th>
                   <th className="px-6 py-4 text-center">Documentation</th>
                   <th className="px-6 py-4 text-center">Status</th>
                 </tr>
@@ -551,7 +589,7 @@ export default function PaymentsClient({
               <tbody className="divide-y divide-gray-100">
                 {paidInvoices.length === 0 ? (
                   <tr>
-                    <td colSpan={6} className="px-6 py-16 text-center text-gray-400">
+                    <td colSpan={7} className="px-6 py-16 text-center text-gray-400">
                       No paid invoices yet.
                     </td>
                   </tr>
@@ -572,6 +610,12 @@ export default function PaymentsClient({
                       </td>
                       <td className="px-6 py-4 text-right font-bold text-gray-900">
                         {inv.amount.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                      </td>
+                      <td className="px-6 py-4">
+                        <div className={`text-xs ${inv.payment_date ? 'text-gray-900 font-medium' : 'text-gray-400'}`}>
+                          {formatPaymentDate(inv.payment_date)}
+                        </div>
+                        <div className="text-gray-500 text-xs mt-0.5">{getBankAccountLabel(inv.bank_account)}</div>
                       </td>
                       <td className="px-6 py-4 text-center">
                         <div className="flex justify-center space-x-3">
@@ -757,6 +801,56 @@ export default function PaymentsClient({
                   </div>
                 )}
 
+                {/* Payment details — date and account are required and cannot
+                    be corrected later, so they sit above the uploader where
+                    they get read rather than skipped past. */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2">
+                  <div className="space-y-2">
+                    <label htmlFor="paymentDate" className="text-sm font-semibold text-gray-800 block">
+                      Payment Date <span className="text-red-500">*</span>
+                      <span className="block text-[11px] text-gray-500 font-normal mt-1">
+                        The day the money left the bank.
+                      </span>
+                    </label>
+                    <input
+                      id="paymentDate"
+                      type="date"
+                      required
+                      value={paymentDate}
+                      max={riyadhToday()}
+                      onChange={(e) => { setPaymentDate(e.target.value); setFormError(''); }}
+                      className="w-full px-3 py-2.5 rounded-lg border border-gray-300 text-sm text-gray-900 bg-white focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition-colors"
+                    />
+                  </div>
+
+                  <div className="space-y-2">
+                    <label htmlFor="bankAccount" className="text-sm font-semibold text-gray-800 block">
+                      Paid From <span className="text-red-500">*</span>
+                      <span className="block text-[11px] text-gray-500 font-normal mt-1">
+                        Company account the transfer came from.
+                      </span>
+                    </label>
+                    <select
+                      id="bankAccount"
+                      required
+                      value={bankAccount}
+                      onChange={(e) => { setBankAccount(e.target.value); setFormError(''); }}
+                      className="w-full px-3 py-2.5 rounded-lg border border-gray-300 text-sm text-gray-900 bg-white focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition-colors"
+                    >
+                      <option value="">Select an account…</option>
+                      {BANK_ACCOUNTS.map(account => (
+                        <option key={account.code} value={account.code}>{account.label}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+
+                {formError && (
+                  <p className="text-sm text-red-600 font-medium bg-red-50 border border-red-200 rounded-lg p-3">
+                    {formError}
+                  </p>
+                )}
+
                 {/* Receipt file */}
                 <div className="space-y-3 pt-2">
                   <label className="text-sm font-semibold text-gray-800">
@@ -812,7 +906,7 @@ export default function PaymentsClient({
                 </button>
                 <button
                   type="submit"
-                  disabled={isProcessing || !receiptFile || creditExceedsTotal}
+                  disabled={isProcessing || !receiptFile || !paymentDate || !bankAccount || creditExceedsTotal}
                   className="flex items-center px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold rounded-lg text-sm shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {isProcessing ? (

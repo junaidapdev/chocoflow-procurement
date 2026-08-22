@@ -4,6 +4,8 @@ import { logAuditEvent } from '@/lib/audit-log';
 import { requireRoles } from '@/lib/auth-context';
 import { getSupabaseAdminClient } from '@/lib/supabase-admin';
 import { areUuids } from '@/lib/uuid';
+import { isBankAccount } from '@/lib/constants';
+import { validatePaymentDate } from '@/lib/dates';
 
 const MAX_FILE_SIZE = 5 * 1024 * 1024; // 5MB
 const RECEIPT_EXT: Record<string, string> = {
@@ -69,6 +71,9 @@ function buildPaymentMetadata(input: {
   netPayable?: number | null;
   receiptPath?: string | null;
   receiptPublicUrl?: string | null;
+  paymentDate?: string | null;
+  bankAccount?: string | null;
+  batchId?: string | null;
   file?: File | null;
   reason?: string;
 }) {
@@ -82,6 +87,9 @@ function buildPaymentMetadata(input: {
     net_payable: input.netPayable ?? null,
     receipt_path: input.receiptPath || null,
     receipt_public_url: input.receiptPublicUrl || null,
+    payment_date: input.paymentDate || null,
+    bank_account: input.bankAccount || null,
+    payment_batch_id: input.batchId || null,
     file_name: input.file?.name || null,
     file_type: input.file?.type || null,
     file_size: input.file?.size || null,
@@ -97,6 +105,8 @@ function buildPaymentMetadata(input: {
 //   invoiceIds    — JSON array of invoice UUIDs (preferred; batch mode)
 //   invoiceId     — single invoice UUID (legacy; still accepted)
 //   appliedReturnIds — JSON array of return invoice UUIDs (optional)
+//   paymentDate   — YYYY-MM-DD, the day money left the bank (required)
+//   bankAccount   — last 4 digits of the company account used (required)
 //
 // One bank transfer often covers several branch invoices from the same
 // vendor — the payer selects them and uploads a single bank receipt.
@@ -125,6 +135,8 @@ export async function POST(request: NextRequest) {
     const legacyInvoiceId = formData.get('invoiceId') as string | null;
     const invoiceIdsRaw = formData.get('invoiceIds') as string | null;
     const appliedReturnIdsRaw = formData.get('appliedReturnIds') as string | null;
+    const paymentDate = formData.get('paymentDate') as string | null;
+    const bankAccount = formData.get('bankAccount') as string | null;
 
     // --- Parse invoice IDs (batch or legacy single) ---
     let invoiceIds: string[] = [];
@@ -169,6 +181,11 @@ export async function POST(request: NextRequest) {
     // Build the receipt storage path on the SERVER — never trust a client path,
     // which (with upsert) could overwrite another receipt.
     const receiptPath = `${randomUUID()}.${RECEIPT_EXT[file.type] || 'bin'}`;
+
+    // One bank transfer covering several invoices is one batch. Stamping every
+    // affected row with the same id makes the transfer addressable afterwards,
+    // instead of only being implied by a shared receipt URL.
+    const batchId = randomUUID();
 
     // --- Parse applied return IDs (optional) ---
     let appliedReturnIds: string[] = [];
@@ -218,6 +235,60 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Invoice and return IDs must be valid UUIDs' }, { status: 400 });
     }
 
+    // --- Payment date & bank account ---
+    // Both required. They are what reconciles this payment against a bank
+    // statement later, and an invoice is terminal once Paid — there is no
+    // correction flow — so anything missing here is missing permanently.
+    const paymentDateError = validatePaymentDate(paymentDate);
+    if (paymentDateError !== null) {
+      await logAuditEvent({
+        action: 'payment.denied',
+        entityType: 'payment_batch',
+        actor: auth.actor,
+        outcome: 'denied',
+        errorMessage: paymentDateError,
+        metadata: buildPaymentMetadata({
+          invoiceIds,
+          appliedReturnIds,
+          receiptPath,
+          paymentDate: typeof paymentDate === 'string' ? paymentDate : null,
+          bankAccount: typeof bankAccount === 'string' ? bankAccount : null,
+          batchId,
+          file,
+          reason: 'invalid_payment_date',
+        }),
+        request,
+      });
+
+      return NextResponse.json({ error: paymentDateError }, { status: 400 });
+    }
+
+    if (!isBankAccount(bankAccount)) {
+      await logAuditEvent({
+        action: 'payment.denied',
+        entityType: 'payment_batch',
+        actor: auth.actor,
+        outcome: 'denied',
+        errorMessage: 'A valid company bank account must be selected.',
+        metadata: buildPaymentMetadata({
+          invoiceIds,
+          appliedReturnIds,
+          receiptPath,
+          paymentDate,
+          bankAccount: typeof bankAccount === 'string' ? bankAccount : null,
+          batchId,
+          file,
+          reason: 'invalid_bank_account',
+        }),
+        request,
+      });
+
+      return NextResponse.json(
+        { error: 'A valid company bank account must be selected.' },
+        { status: 400 }
+      );
+    }
+
     // --- File validation ---
     if (!ALLOWED_RECEIPT_TYPES.includes(file.type)) {
       await logAuditEvent({
@@ -230,6 +301,9 @@ export async function POST(request: NextRequest) {
           invoiceIds,
           appliedReturnIds,
           receiptPath,
+          paymentDate,
+          bankAccount,
+          batchId,
           file,
           reason: 'invalid_receipt_file_type',
         }),
@@ -250,6 +324,9 @@ export async function POST(request: NextRequest) {
           invoiceIds,
           appliedReturnIds,
           receiptPath,
+          paymentDate,
+          bankAccount,
+          batchId,
           file,
           reason: 'receipt_file_too_large',
         }),
@@ -286,6 +363,9 @@ export async function POST(request: NextRequest) {
           grossTotal,
           appliedReturnIds,
           receiptPath,
+          paymentDate,
+          bankAccount,
+          batchId,
           file,
           reason: missingInvoiceIds.length > 0 ? 'invoice_not_found' : 'invoice_fetch_failed',
         }),
@@ -311,6 +391,9 @@ export async function POST(request: NextRequest) {
           grossTotal,
           appliedReturnIds,
           receiptPath,
+          paymentDate,
+          bankAccount,
+          batchId,
           file,
           reason: 'invoice_not_ready_to_pay',
         }),
@@ -365,6 +448,9 @@ export async function POST(request: NextRequest) {
             returnTotal,
             netPayable: Math.max(0, grossTotal - returnTotal),
             receiptPath,
+            paymentDate,
+            bankAccount,
+            batchId,
             file,
             reason: returnFetchError
               ? 'return_credit_fetch_failed'
@@ -396,6 +482,9 @@ export async function POST(request: NextRequest) {
             returnTotal,
             netPayable: Math.max(0, grossTotal - returnTotal),
             receiptPath,
+            paymentDate,
+            bankAccount,
+            batchId,
             file,
             reason: 'return_credit_exceeds_gross_total',
           }),
@@ -433,6 +522,9 @@ export async function POST(request: NextRequest) {
           returnTotal,
           netPayable,
           receiptPath,
+          paymentDate,
+          bankAccount,
+          batchId,
           file,
           reason: 'storage_upload_failed',
         }),
@@ -455,6 +547,9 @@ export async function POST(request: NextRequest) {
       p_invoice_ids: invoiceIds,
       p_return_ids: appliedReturnIds,
       p_receipt_url: urlData.publicUrl,
+      p_payment_date: paymentDate,
+      p_bank_account: bankAccount,
+      p_batch_id: batchId,
     });
 
     if (paymentError) {
@@ -479,6 +574,9 @@ export async function POST(request: NextRequest) {
           returnTotal,
           netPayable,
           receiptPath,
+          paymentDate,
+          bankAccount,
+          batchId,
           receiptPublicUrl: urlData.publicUrl,
           file,
           reason: 'atomic_payment_failed',
@@ -517,6 +615,9 @@ export async function POST(request: NextRequest) {
           returnTotal,
           netPayable,
           receiptPath,
+          paymentDate,
+          bankAccount,
+          batchId,
           receiptPublicUrl: urlData.publicUrl,
           file,
         }),
@@ -549,6 +650,9 @@ export async function POST(request: NextRequest) {
         returnTotal,
         netPayable,
         receiptPath,
+        paymentDate,
+        bankAccount,
+        batchId,
         receiptPublicUrl: urlData.publicUrl,
         file,
       }),

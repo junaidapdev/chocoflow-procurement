@@ -4,6 +4,8 @@ import { useState, useMemo } from 'react';
 import { format } from 'date-fns';
 import { supabase } from '@/lib/supabase';
 import { openSecureDocument } from '@/lib/storage';
+import { getBankAccountLabel } from '@/lib/constants';
+import { formatPaymentDate } from '@/lib/dates';
 import { Check, FileText, CreditCard, Loader2, Download, ShieldCheck, Clock } from 'lucide-react';
 
 type Invoice = {
@@ -22,6 +24,8 @@ type Invoice = {
   updated_at?: string;
   type?: 'invoice' | 'return';
   applied_to_invoice_id?: string | null;
+  payment_date?: string | null;
+  bank_account?: string | null;
   vendor_notified_at?: string | null;
   salam_notified_at?: string | null;
 };
@@ -109,7 +113,10 @@ Kayan Sweets Team`;
     const salamNumber = process.env.NEXT_PUBLIC_SALAM_WHATSAPP;
     if (!salamNumber) return alert('Salam WhatsApp number is not configured in .env.local (NEXT_PUBLIC_SALAM_WHATSAPP)');
 
-    const paidDate = format(new Date(inv.updated_at || inv.created_at), 'yyyy-MM-dd HH:mm');
+    // The recorded transfer date. updated_at used to stand in for this, but the
+    // row's update trigger bumps it on every later write — including the very
+    // notification click below — so the date drifted after the fact.
+    const paidDate = formatPaymentDate(inv.payment_date, 'yyyy-MM-dd');
 
     const message = `✅ Payment Recorded
 
@@ -118,7 +125,8 @@ Kayan Sweets Team`;
 - Brand: ${inv.brand_name}
 - Branch: ${inv.branch_id}
 - Amount: SAR ${inv.amount}
-- Date: ${paidDate}
+- Payment Date: ${paidDate}
+- Paid From: ${getBankAccountLabel(inv.bank_account)}
 
 Uploaded by the Payments Team.
 Kayan Sweets Team`;
@@ -207,7 +215,7 @@ Kayan Sweets Team`;
       return;
     }
 
-    const headers = ['Invoice Number', 'Vendor Name', 'Brand Name', 'Branch', 'Amount (SAR)', 'Credit Applied (SAR)', 'Net Paid (SAR)', 'Invoice Date', 'Paid Date', 'Receipt URL'];
+    const headers = ['Invoice Number', 'Vendor Name', 'Brand Name', 'Branch', 'Amount (SAR)', 'Credit Applied (SAR)', 'Net Paid (SAR)', 'Invoice Date', 'Paid Date', 'Bank Account', 'Receipt URL'];
     const rows = paidInvoices.map(inv => {
       const credit = creditsByInvoiceId.get(inv.id) || 0;
       return [
@@ -219,7 +227,8 @@ Kayan Sweets Team`;
         credit.toFixed(2),
         (Number(inv.amount) - credit).toFixed(2),
         format(new Date(inv.invoice_date), 'yyyy-MM-dd'),
-        inv.updated_at ? format(new Date(inv.updated_at), 'yyyy-MM-dd HH:mm') : '',
+        inv.payment_date || '',
+        inv.bank_account || '',
         inv.receipt_url || '',
       ];
     });
@@ -436,6 +445,7 @@ Kayan Sweets Team`;
                 <th className="px-6 py-4">Brand/Branch</th>
                 <th className="px-6 py-4">Invoice Info</th>
                 <th className="px-6 py-4 text-right">Amount (SAR)</th>
+                {activeTab === 'History' && <th className="px-6 py-4">Paid</th>}
                 <th className="px-6 py-4 text-center">Documentation</th>
                 <th className="px-6 py-4 text-center">Action</th>
               </tr>
@@ -443,7 +453,7 @@ Kayan Sweets Team`;
             <tbody className="divide-y divide-gray-100">
               {visibleRows.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="px-6 py-16 text-center text-gray-400">
+                  <td colSpan={activeTab === 'History' ? 7 : 6} className="px-6 py-16 text-center text-gray-400">
                     <div className="flex flex-col items-center">
                       <CreditCard className="w-8 h-8 text-gray-300 mb-2" />
                       <p>No invoices in {activeTab}.</p>
@@ -484,6 +494,14 @@ Kayan Sweets Team`;
                         );
                       })()}
                     </td>
+                    {activeTab === 'History' && (
+                      <td className="px-6 py-4">
+                        <div className={`text-xs ${inv.payment_date ? 'text-gray-900 font-medium' : 'text-gray-400'}`}>
+                          {formatPaymentDate(inv.payment_date)}
+                        </div>
+                        <div className="text-gray-500 text-xs mt-0.5">{getBankAccountLabel(inv.bank_account)}</div>
+                      </td>
+                    )}
                     <td className="px-6 py-4 text-center">
                       <div className="flex justify-center space-x-3">
                         {inv.invoice_url && (
@@ -603,6 +621,17 @@ Kayan Sweets Team`;
                     })()}
                   </div>
                 </div>
+
+                {activeTab === 'History' && (
+                  <div className="text-xs text-gray-500 bg-gray-50 border border-gray-100 rounded-lg px-3 py-2">
+                    Paid{' '}
+                    <span className={inv.payment_date ? 'font-semibold text-gray-800' : 'text-gray-400'}>
+                      {formatPaymentDate(inv.payment_date)}
+                    </span>
+                    {' · '}
+                    <span className="text-gray-600">{getBankAccountLabel(inv.bank_account)}</span>
+                  </div>
+                )}
 
                 <div className="flex items-center gap-3">
                   {inv.invoice_url && (

@@ -229,6 +229,34 @@ ALTER TABLE public.invoices
     ADD COLUMN IF NOT EXISTS vendor_notified_at TIMESTAMPTZ,
     ADD COLUMN IF NOT EXISTS salam_notified_at TIMESTAMPTZ;
 
+-- ─────────────────────────────────────────────────────────────────────────────
+-- Payment date, bank account & batch id
+-- payment_date     — the day money actually left the bank, typed by the payer.
+--                    DATE because it reconciles against bank statements, which
+--                    settle per day. Never derived from updated_at: an UPDATE
+--                    trigger bumps that column on every later write (e.g. a
+--                    notification), which would silently move the payment date.
+-- bank_account     — last 4 digits of the company account used. Only the last 4
+--                    on purpose; full account numbers do not belong here. Not a
+--                    CHECK constraint — the valid set lives in
+--                    src/lib/constants.ts so accounts can change without a
+--                    migration, the same way BRANCHES does.
+-- payment_batch_id — one bank transfer usually covers several invoices. This
+--                    makes that batch addressable instead of merely implied by
+--                    a shared receipt_url.
+-- ─────────────────────────────────────────────────────────────────────────────
+ALTER TABLE public.invoices
+    ADD COLUMN IF NOT EXISTS payment_date DATE,
+    ADD COLUMN IF NOT EXISTS bank_account TEXT,
+    ADD COLUMN IF NOT EXISTS payment_batch_id UUID;
+
+CREATE INDEX IF NOT EXISTS idx_invoices_payment_date
+    ON public.invoices(payment_date DESC);
+
+CREATE INDEX IF NOT EXISTS idx_invoices_payment_batch
+    ON public.invoices(payment_batch_id);
+
+
 -- Function to cascade brand_name updates to invoices table
 CREATE OR REPLACE FUNCTION public.cascade_brand_name_update()
 RETURNS TRIGGER AS $$
@@ -323,29 +351,68 @@ CREATE POLICY "Salam can select audit logs"
         )
     );
 
+
 -- ─────────────────────────────────────────────────────────────────────────────
 -- Atomic payment
 -- Applies return credits (Approved → Paid) and marks invoices Paid in a single
--- transaction. If any count is off, it raises and the whole thing rolls back,
+-- transaction, stamping every affected row with the payment date, bank account
+-- and batch id. If any count is off, it raises and the whole thing rolls back,
 -- so a payment can never be left half-recorded. Called by the receipts API.
 -- ─────────────────────────────────────────────────────────────────────────────
 CREATE OR REPLACE FUNCTION public.record_invoice_payment(
-    p_invoice_ids uuid[],
-    p_return_ids  uuid[],
-    p_receipt_url text
+    p_invoice_ids  uuid[],
+    p_return_ids   uuid[],
+    p_receipt_url  text,
+    p_payment_date date,
+    p_bank_account text,
+    p_batch_id     uuid
 ) RETURNS void AS $$
 DECLARE
-    v_expected_invoices int := coalesce(array_length(p_invoice_ids, 1), 0);
-    v_expected_returns  int := coalesce(array_length(p_return_ids, 1), 0);
-    v_updated int;
+    v_expected_invoices int  := coalesce(array_length(p_invoice_ids, 1), 0);
+    v_expected_returns  int  := coalesce(array_length(p_return_ids, 1), 0);
+    v_today             date := (now() AT TIME ZONE 'Asia/Riyadh')::date;
+    v_updated           int;
 BEGIN
     IF v_expected_invoices = 0 THEN
         RAISE EXCEPTION 'At least one invoice is required';
     END IF;
 
+    IF p_payment_date IS NULL THEN
+        RAISE EXCEPTION 'Payment date is required';
+    END IF;
+
+    -- Compared in Riyadh time, not UTC. A payer entering "today" at 1am local
+    -- is still on yesterday's UTC date, and a naive check would reject it.
+    IF p_payment_date > v_today THEN
+        RAISE EXCEPTION 'Payment date % cannot be in the future (today is % in Riyadh)',
+            p_payment_date, v_today;
+    END IF;
+
+    IF p_payment_date < DATE '2020-01-01' THEN
+        RAISE EXCEPTION 'Payment date % is implausible (before 2020-01-01)', p_payment_date;
+    END IF;
+
+    -- A format rule, deliberately not a fixed list of the three live accounts.
+    -- Which accounts are current belongs in src/lib/constants.ts so the set can
+    -- change without a migration (it already has once), and pinning today's
+    -- codes here would also reject any account later retired - orphaning its
+    -- historical payments. What has to hold at the storage boundary is the
+    -- invariant the app relies on: only ever a last-4. That is what keeps a
+    -- full account number out of the table and out of the dashboards.
+    IF p_bank_account IS NULL OR p_bank_account !~ '^[0-9]{4}$' THEN
+        RAISE EXCEPTION 'Bank account must be the last 4 digits of a company account, got %',
+            coalesce(p_bank_account, '(null)');
+    END IF;
+
+    -- Return credits get the payment date and batch, but never a bank account:
+    -- applying a credit moves no money out of any account, so tagging one would
+    -- inflate per-account payout totals.
     IF v_expected_returns > 0 THEN
         UPDATE public.invoices
-            SET status = 'Paid', applied_to_invoice_id = p_invoice_ids[1]
+            SET status                = 'Paid',
+                applied_to_invoice_id = p_invoice_ids[1],
+                payment_date          = p_payment_date,
+                payment_batch_id      = p_batch_id
             WHERE id = ANY(p_return_ids)
               AND type = 'return'
               AND status = 'Approved'
@@ -358,7 +425,11 @@ BEGIN
     END IF;
 
     UPDATE public.invoices
-        SET status = 'Paid', receipt_url = p_receipt_url
+        SET status           = 'Paid',
+            receipt_url      = p_receipt_url,
+            payment_date     = p_payment_date,
+            bank_account     = p_bank_account,
+            payment_batch_id = p_batch_id
         WHERE id = ANY(p_invoice_ids)
           AND type = 'invoice'
           AND status = 'ReadyToPay';
@@ -369,3 +440,55 @@ BEGIN
     END IF;
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+
+-- ── 2b. Lock the function down to the service role ──────────────────────────
+-- PostgreSQL grants EXECUTE on a new function to PUBLIC by default, and
+-- Supabase additionally grants EXECUTE to anon/authenticated on public-schema
+-- functions. public is an exposed PostgREST schema, so without this block
+-- anyone holding NEXT_PUBLIC_SUPABASE_ANON_KEY — which ships to every browser —
+-- can POST /rest/v1/rpc/record_invoice_payment directly and mark invoices Paid,
+-- consuming return credits and skipping both the payer authorization in
+-- /api/receipts and its audit log entirely.
+--
+-- SECURITY DEFINER makes that worse, not better: the body runs as the function
+-- owner, which also owns public.invoices, and an owner bypasses RLS unless the
+-- table is set to FORCE ROW LEVEL SECURITY. So the RLS that otherwise blocks
+-- all client writes does not apply here.
+--
+-- Three details this depends on:
+--   * service_role is BYPASSRLS but NOT superuser, so grants still apply to it.
+--     The GRANT below is what keeps the receipts API working — never add
+--     service_role to the REVOKE list, however tempting the anon/authenticated/
+--     service_role trio looks.
+--   * Revoking from PUBLIC alone is not enough; a direct grant to a role
+--     survives it, and Supabase makes exactly such a grant.
+--   * This must run AFTER the CREATE. Section 2 does DROP then CREATE, and the
+--     new function object re-acquires both default grants — CREATE OR REPLACE
+--     alone would have preserved them. Re-run this whenever the function is
+--     recreated.
+--
+-- The loop covers every overload, including the pre-August 3-arg version that
+-- may still exist on a database which never ran this migration.
+
+ALTER FUNCTION public.record_invoice_payment(uuid[], uuid[], text, date, text, uuid)
+    SET search_path = public, pg_temp;
+
+DO $lockdown$
+DECLARE
+    r record;
+BEGIN
+    FOR r IN
+        SELECT p.oid::regprocedure AS sig
+        FROM pg_proc p
+        JOIN pg_namespace n ON n.oid = p.pronamespace
+        WHERE n.nspname = 'public'
+          AND p.proname = 'record_invoice_payment'
+    LOOP
+        EXECUTE format('REVOKE ALL ON FUNCTION %s FROM PUBLIC', r.sig);
+        EXECUTE format('REVOKE ALL ON FUNCTION %s FROM anon, authenticated', r.sig);
+        EXECUTE format('GRANT EXECUTE ON FUNCTION %s TO service_role', r.sig);
+        RAISE NOTICE 'Locked down %', r.sig;
+    END LOOP;
+END
+$lockdown$;
