@@ -5,7 +5,7 @@ import { requireRoles } from '@/lib/auth-context';
 import { getSupabaseAdminClient } from '@/lib/supabase-admin';
 import { areUuids } from '@/lib/uuid';
 import { isBankAccount } from '@/lib/constants';
-import { isValidDateString, validatePaymentDate } from '@/lib/dates';
+import { validatePaymentDate } from '@/lib/dates';
 
 const MAX_FILE_SIZE = 5 * 1024 * 1024; // 5MB
 const RECEIPT_EXT: Record<string, string> = {
@@ -240,14 +240,13 @@ export async function POST(request: NextRequest) {
     // statement later, and an invoice is terminal once Paid — there is no
     // correction flow — so anything missing here is missing permanently.
     const paymentDateError = validatePaymentDate(paymentDate);
-    if (paymentDateError !== null || !isValidDateString(paymentDate)) {
-      const message = paymentDateError ?? 'Payment date is required (YYYY-MM-DD).';
+    if (paymentDateError !== null) {
       await logAuditEvent({
         action: 'payment.denied',
         entityType: 'payment_batch',
         actor: auth.actor,
         outcome: 'denied',
-        errorMessage: message,
+        errorMessage: paymentDateError,
         metadata: buildPaymentMetadata({
           invoiceIds,
           appliedReturnIds,
@@ -261,7 +260,7 @@ export async function POST(request: NextRequest) {
         request,
       });
 
-      return NextResponse.json({ error: message }, { status: 400 });
+      return NextResponse.json({ error: paymentDateError }, { status: 400 });
     }
 
     if (!isBankAccount(bankAccount)) {

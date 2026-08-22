@@ -94,5 +94,17 @@ export const isBankAccount = (value: unknown): value is string =>
 
 // Display helper for history tables and exports. Payments made before this
 // feature existed have no account on record.
-export const getBankAccountLabel = (code: string | null | undefined): string =>
-  BANK_ACCOUNTS.find(a => a.code === code)?.label ?? (code ? `Account ••••${code}` : 'Not recorded');
+export const getBankAccountLabel = (code: string | null | undefined): string => {
+  if (!code) return 'Not recorded';
+
+  const known = BANK_ACCOUNTS.find(a => a.code === code);
+  if (known) return known.label;
+
+  // Not in the current list. That is expected for an account since retired —
+  // its past payments must still show where the money came from, so this can't
+  // just collapse to "Not recorded" — but it equally covers a value that
+  // reached the database without passing validation. Show at most the last 4
+  // characters, so a full account number can never be echoed back here, and
+  // mark it so it is never read as one of the live accounts.
+  return `Account ••••${code.slice(-4)} (unrecognized)`;
+};

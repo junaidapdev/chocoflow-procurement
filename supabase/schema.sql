@@ -388,8 +388,20 @@ BEGIN
             p_payment_date, v_today;
     END IF;
 
-    IF p_bank_account IS NULL OR btrim(p_bank_account) = '' THEN
-        RAISE EXCEPTION 'Bank account is required';
+    IF p_payment_date < DATE '2020-01-01' THEN
+        RAISE EXCEPTION 'Payment date % is implausible (before 2020-01-01)', p_payment_date;
+    END IF;
+
+    -- A format rule, deliberately not a fixed list of the three live accounts.
+    -- Which accounts are current belongs in src/lib/constants.ts so the set can
+    -- change without a migration (it already has once), and pinning today's
+    -- codes here would also reject any account later retired - orphaning its
+    -- historical payments. What has to hold at the storage boundary is the
+    -- invariant the app relies on: only ever a last-4. That is what keeps a
+    -- full account number out of the table and out of the dashboards.
+    IF p_bank_account IS NULL OR p_bank_account !~ '^[0-9]{4}$' THEN
+        RAISE EXCEPTION 'Bank account must be the last 4 digits of a company account, got %',
+            coalesce(p_bank_account, '(null)');
     END IF;
 
     -- Return credits get the payment date and batch, but never a bank account:
@@ -428,3 +440,55 @@ BEGIN
     END IF;
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+
+-- ── 2b. Lock the function down to the service role ──────────────────────────
+-- PostgreSQL grants EXECUTE on a new function to PUBLIC by default, and
+-- Supabase additionally grants EXECUTE to anon/authenticated on public-schema
+-- functions. public is an exposed PostgREST schema, so without this block
+-- anyone holding NEXT_PUBLIC_SUPABASE_ANON_KEY — which ships to every browser —
+-- can POST /rest/v1/rpc/record_invoice_payment directly and mark invoices Paid,
+-- consuming return credits and skipping both the payer authorization in
+-- /api/receipts and its audit log entirely.
+--
+-- SECURITY DEFINER makes that worse, not better: the body runs as the function
+-- owner, which also owns public.invoices, and an owner bypasses RLS unless the
+-- table is set to FORCE ROW LEVEL SECURITY. So the RLS that otherwise blocks
+-- all client writes does not apply here.
+--
+-- Three details this depends on:
+--   * service_role is BYPASSRLS but NOT superuser, so grants still apply to it.
+--     The GRANT below is what keeps the receipts API working — never add
+--     service_role to the REVOKE list, however tempting the anon/authenticated/
+--     service_role trio looks.
+--   * Revoking from PUBLIC alone is not enough; a direct grant to a role
+--     survives it, and Supabase makes exactly such a grant.
+--   * This must run AFTER the CREATE. Section 2 does DROP then CREATE, and the
+--     new function object re-acquires both default grants — CREATE OR REPLACE
+--     alone would have preserved them. Re-run this whenever the function is
+--     recreated.
+--
+-- The loop covers every overload, including the pre-August 3-arg version that
+-- may still exist on a database which never ran this migration.
+
+ALTER FUNCTION public.record_invoice_payment(uuid[], uuid[], text, date, text, uuid)
+    SET search_path = public, pg_temp;
+
+DO $lockdown$
+DECLARE
+    r record;
+BEGIN
+    FOR r IN
+        SELECT p.oid::regprocedure AS sig
+        FROM pg_proc p
+        JOIN pg_namespace n ON n.oid = p.pronamespace
+        WHERE n.nspname = 'public'
+          AND p.proname = 'record_invoice_payment'
+    LOOP
+        EXECUTE format('REVOKE ALL ON FUNCTION %s FROM PUBLIC', r.sig);
+        EXECUTE format('REVOKE ALL ON FUNCTION %s FROM anon, authenticated', r.sig);
+        EXECUTE format('GRANT EXECUTE ON FUNCTION %s TO service_role', r.sig);
+        RAISE NOTICE 'Locked down %', r.sig;
+    END LOOP;
+END
+$lockdown$;

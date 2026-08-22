@@ -27,10 +27,19 @@ export function riyadhToday(): string {
 }
 
 export function isValidDateString(value: unknown): value is string {
+  if (typeof value !== 'string' || !DATE_PATTERN.test(value)) return false;
+
+  // Date.parse is not enough on its own: it rolls an impossible day over into
+  // the next month rather than failing, so '2025-02-31' parses happily as
+  // 3 March and '2025-02-29' as 1 March. Round-tripping the parsed components
+  // back to what was asked for is what actually rejects them.
+  const [year, month, day] = value.split('-').map(Number);
+  const parsed = new Date(Date.UTC(year, month - 1, day));
+
   return (
-    typeof value === 'string' &&
-    DATE_PATTERN.test(value) &&
-    !Number.isNaN(Date.parse(value))
+    parsed.getUTCFullYear() === year &&
+    parsed.getUTCMonth() === month - 1 &&
+    parsed.getUTCDate() === day
   );
 }
 

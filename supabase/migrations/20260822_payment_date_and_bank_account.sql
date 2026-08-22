@@ -81,8 +81,20 @@ BEGIN
             p_payment_date, v_today;
     END IF;
 
-    IF p_bank_account IS NULL OR btrim(p_bank_account) = '' THEN
-        RAISE EXCEPTION 'Bank account is required';
+    IF p_payment_date < DATE '2020-01-01' THEN
+        RAISE EXCEPTION 'Payment date % is implausible (before 2020-01-01)', p_payment_date;
+    END IF;
+
+    -- A format rule, deliberately not a fixed list of the three live accounts.
+    -- Which accounts are current belongs in src/lib/constants.ts so the set can
+    -- change without a migration (it already has once), and pinning today's
+    -- codes here would also reject any account later retired - orphaning its
+    -- historical payments. What has to hold at the storage boundary is the
+    -- invariant the app relies on: only ever a last-4. That is what keeps a
+    -- full account number out of the table and out of the dashboards.
+    IF p_bank_account IS NULL OR p_bank_account !~ '^[0-9]{4}$' THEN
+        RAISE EXCEPTION 'Bank account must be the last 4 digits of a company account, got %',
+            coalesce(p_bank_account, '(null)');
     END IF;
 
     -- Return credits get the payment date and batch, but never a bank account:
@@ -123,7 +135,85 @@ END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
 
--- ── 3. Backfill: payment_batch_id ───────────────────────────────────────────
+-- ── 2b. Lock the function down to the service role ──────────────────────────
+-- PostgreSQL grants EXECUTE on a new function to PUBLIC by default, and
+-- Supabase additionally grants EXECUTE to anon/authenticated on public-schema
+-- functions. public is an exposed PostgREST schema, so without this block
+-- anyone holding NEXT_PUBLIC_SUPABASE_ANON_KEY — which ships to every browser —
+-- can POST /rest/v1/rpc/record_invoice_payment directly and mark invoices Paid,
+-- consuming return credits and skipping both the payer authorization in
+-- /api/receipts and its audit log entirely.
+--
+-- SECURITY DEFINER makes that worse, not better: the body runs as the function
+-- owner, which also owns public.invoices, and an owner bypasses RLS unless the
+-- table is set to FORCE ROW LEVEL SECURITY. So the RLS that otherwise blocks
+-- all client writes does not apply here.
+--
+-- Three details this depends on:
+--   * service_role is BYPASSRLS but NOT superuser, so grants still apply to it.
+--     The GRANT below is what keeps the receipts API working — never add
+--     service_role to the REVOKE list, however tempting the anon/authenticated/
+--     service_role trio looks.
+--   * Revoking from PUBLIC alone is not enough; a direct grant to a role
+--     survives it, and Supabase makes exactly such a grant.
+--   * This must run AFTER the CREATE. Section 2 does DROP then CREATE, and the
+--     new function object re-acquires both default grants — CREATE OR REPLACE
+--     alone would have preserved them. Re-run this whenever the function is
+--     recreated.
+--
+-- The loop covers every overload, including the pre-August 3-arg version that
+-- may still exist on a database which never ran this migration.
+
+ALTER FUNCTION public.record_invoice_payment(uuid[], uuid[], text, date, text, uuid)
+    SET search_path = public, pg_temp;
+
+DO $lockdown$
+DECLARE
+    r record;
+BEGIN
+    FOR r IN
+        SELECT p.oid::regprocedure AS sig
+        FROM pg_proc p
+        JOIN pg_namespace n ON n.oid = p.pronamespace
+        WHERE n.nspname = 'public'
+          AND p.proname = 'record_invoice_payment'
+    LOOP
+        EXECUTE format('REVOKE ALL ON FUNCTION %s FROM PUBLIC', r.sig);
+        EXECUTE format('REVOKE ALL ON FUNCTION %s FROM anon, authenticated', r.sig);
+        EXECUTE format('GRANT EXECUTE ON FUNCTION %s TO service_role', r.sig);
+        RAISE NOTICE 'Locked down %', r.sig;
+    END LOOP;
+END
+$lockdown$;
+
+
+-- ── 3. Snapshot updated_at BEFORE anything writes to invoices ───────────────
+-- Step 6 recovers historical payment dates from updated_at. That only works
+-- while updated_at still holds the payment timestamp — and public.invoices has
+-- a BEFORE UPDATE trigger (update_invoices_updated_at) that resets it to now()
+-- on ANY write, including step 4's batch-id backfill immediately below.
+--
+-- Reading updated_at after step 4 would stamp every recovered date with the
+-- migration date — precisely the bug this migration exists to remove, and
+-- unrecoverable afterwards, since the original value is overwritten in place.
+-- Snapshotting first makes that safe structurally instead of depending on the
+-- order these statements happen to appear in.
+
+-- payment_batch_id is also captured, as it is read BEFORE this run writes
+-- anything: a row that already has one was touched by an earlier run of this
+-- migration, which means its updated_at is that run's timestamp rather than the
+-- payment's. Step 6 uses this to refuse to "recover" a date from a value a
+-- previous run already overwrote — which is what makes re-running safe, and
+-- what stops a re-run from undoing the repair in
+-- 20260822b_repair_payment_date_regression.sql.
+DROP TABLE IF EXISTS _chocoflow_paid_updated_at;
+CREATE TEMP TABLE _chocoflow_paid_updated_at AS
+SELECT id, updated_at, payment_batch_id AS batch_id_before_this_run
+FROM public.invoices
+WHERE status = 'Paid';
+
+
+-- ── 4. Backfill: payment_batch_id ───────────────────────────────────────────
 -- Everything paid in one transfer shares a receipt_url, so that groups a batch.
 
 WITH batches AS (
@@ -153,21 +243,20 @@ WHERE ret.type = 'return'
   AND inv.payment_batch_id IS NOT NULL;
 
 
--- ── 4. Backfill: payment_date from the audit trail ──────────────────────────
+-- ── 5. Backfill: payment_date from the audit trail ──────────────────────────
 -- A completed payment writes a `payment.batch_completed` audit row whose
 -- created_at is the real moment of payment and whose metadata lists the invoice
--- ids. That is an accurate source; `updated_at` is not.
+-- ids. That is an accurate source; updated_at is only a fallback.
 --
--- audit_logs may not exist: it ships in schema.sql, which is the fresh-install
--- script, so a project created before that section was added never got the
--- table. The whole step is therefore optional — without it, step 5 below is the
--- only source of historical dates. Guarded rather than assumed, so this file
--- runs on any vintage of the database.
+-- audit_logs may not exist: it ships in schema.sql, the fresh-install script,
+-- so a live project created before that section was added never got the table.
+-- The step is therefore optional and guarded, so this file runs on any vintage
+-- of the database.
 
 DO $do$
 BEGIN
     IF to_regclass('public.audit_logs') IS NULL THEN
-        RAISE NOTICE 'audit_logs not found - skipping the audit-trail backfill. Historical payment dates will come only from step 5.';
+        RAISE NOTICE 'audit_logs not found - skipping the audit-trail backfill. Historical payment dates will come only from step 6.';
         RETURN;
     END IF;
 
@@ -214,15 +303,18 @@ END
 $do$;
 
 
--- ── 5. Backfill: payments with no audit row ─────────────────────────────────
--- For a Paid invoice that was never notified, nothing has written to the row
--- since the payment itself - so updated_at IS the payment timestamp, exactly.
--- Rows that WERE notified are left NULL rather than filled with a date we know
+-- ── 6. Backfill: payments with no audit row ─────────────────────────────────
+-- For a Paid invoice that was never notified, nothing wrote to the row after
+-- the payment itself - so its snapshotted updated_at IS the payment timestamp,
+-- exactly. Reads the step-3 snapshot, never the live column, which step 4 has
+-- since overwritten.
+--
+-- Rows that WERE notified are left NULL rather than filled with a value we know
 -- is contaminated; the dashboards render those as "-".
 --
 -- If the notification columns don't exist either, then nothing was ever
--- notified and updated_at is exact for every Paid row - so the filter is
--- dropped rather than the step skipped.
+-- notified and the snapshot is exact for every Paid row - so the filter is
+-- dropped rather than the whole step skipped.
 
 DO $do$
 DECLARE
@@ -235,21 +327,27 @@ DECLARE
     );
 BEGIN
     EXECUTE format($backfill$
-        UPDATE public.invoices
-        SET payment_date = (updated_at AT TIME ZONE 'Asia/Riyadh')::date
-        WHERE status = 'Paid'
-          AND type = 'invoice'
-          AND payment_date IS NULL
-          AND updated_at IS NOT NULL
+        UPDATE public.invoices inv
+        SET payment_date = (snap.updated_at AT TIME ZONE 'Asia/Riyadh')::date
+        FROM _chocoflow_paid_updated_at snap
+        WHERE snap.id = inv.id
+          AND inv.status = 'Paid'
+          AND inv.type = 'invoice'
+          AND inv.payment_date IS NULL
+          AND snap.updated_at IS NOT NULL
+          AND snap.batch_id_before_this_run IS NULL
           %s;
     $backfill$,
     CASE
         WHEN v_has_notify_cols
-        THEN 'AND vendor_notified_at IS NULL AND salam_notified_at IS NULL'
+        THEN 'AND inv.vendor_notified_at IS NULL AND inv.salam_notified_at IS NULL'
         ELSE ''
     END);
 END
 $do$;
+
+
+-- ── 7. Applied return credits inherit their invoice's payment date ──────────
 
 UPDATE public.invoices ret
 SET payment_date = inv.payment_date
@@ -259,6 +357,8 @@ WHERE ret.type = 'return'
   AND ret.payment_date IS NULL
   AND ret.applied_to_invoice_id = inv.id
   AND inv.payment_date IS NOT NULL;
+
+DROP TABLE IF EXISTS _chocoflow_paid_updated_at;
 
 -- Historical bank accounts cannot be recovered — no record of them exists.
 -- They stay NULL and display as "Not recorded".
