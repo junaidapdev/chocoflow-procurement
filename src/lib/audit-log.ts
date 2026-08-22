@@ -98,6 +98,58 @@ function normalizeObject(value?: Record<string, unknown> | null) {
   return sanitizeForJson(value);
 }
 
+// Audit writes must never fail the business operation that triggered them — a
+// payment going through matters more than its ledger row. The cost of that
+// choice is silence: audit_logs was missing from the live database for months
+// and every insert failed unnoticed, because a swallowed error looks exactly
+// like no error.
+//
+// So we still don't throw, but we make the failure loud in the server logs and
+// countable, so the Audit Logs dashboard can tell "nothing happened" apart from
+// "nothing was recorded".
+
+// PostgREST reports a missing table as PGRST205; Postgres itself uses 42P01.
+const MISSING_TABLE_CODES = new Set(['PGRST205', '42P01']);
+
+export type AuditLogHealth = {
+  failures: number;
+  lastError: string | null;
+  lastFailedAt: string | null;
+  tableMissing: boolean;
+};
+
+let health: AuditLogHealth = {
+  failures: 0,
+  lastError: null,
+  lastFailedAt: null,
+  tableMissing: false,
+};
+
+function recordAuditFailure(message: string, code?: string, action?: string) {
+  const tableMissing = code ? MISSING_TABLE_CODES.has(code) : /audit_logs/.test(message);
+
+  health = {
+    failures: health.failures + 1,
+    lastError: message,
+    lastFailedAt: new Date().toISOString(),
+    tableMissing: health.tableMissing || tableMissing,
+  };
+
+  console.error(
+    `[AUDIT-LOG FAILURE] action=${action || 'unknown'} code=${code || 'none'} ` +
+      `total_failures=${health.failures}: ${message}` +
+      (tableMissing
+        ? ' — the audit_logs table does not exist. Run supabase/migrations/20260822_create_audit_logs.sql.'
+        : '')
+  );
+}
+
+// Read by the Audit Logs dashboard. Counts are per server instance and reset on
+// deploy, so treat this as a live signal rather than a historical total.
+export function getAuditLogHealth(): AuditLogHealth {
+  return { ...health };
+}
+
 export async function logAuditEvent(input: AuditLogInput): Promise<void> {
   const actor = input.actor;
 
@@ -123,9 +175,13 @@ export async function logAuditEvent(input: AuditLogInput): Promise<void> {
     });
 
     if (error) {
-      console.error('Audit log insert failed:', error);
+      recordAuditFailure(error.message, error.code, input.action);
     }
   } catch (err) {
-    console.error('Audit log write crashed:', err);
+    recordAuditFailure(
+      err instanceof Error ? err.message : String(err),
+      undefined,
+      input.action
+    );
   }
 }

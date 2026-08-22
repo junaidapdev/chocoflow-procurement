@@ -1,7 +1,7 @@
 'use client';
 
 import { useMemo, useState } from 'react';
-import { Database, Eye, Filter, Search, User, X } from 'lucide-react';
+import { AlertTriangle, Database, Eye, Filter, Search, User, X } from 'lucide-react';
 
 type AuditOutcome = 'success' | 'failure' | 'denied';
 
@@ -26,6 +26,15 @@ export type AuditLog = {
   metadata: Record<string, unknown>;
   request_ip: string | null;
   user_agent: string | null;
+};
+
+// Health of the audit trail itself, so the page can tell "nothing happened"
+// apart from "nothing was recorded".
+export type AuditLogStatus = {
+  readError: string | null;
+  tableMissing: boolean;
+  writeFailures: number;
+  lastWriteError: string | null;
 };
 
 type FilterState = {
@@ -115,7 +124,13 @@ function JsonBlock({ title, value }: { title: string; value: unknown }) {
   );
 }
 
-export default function AuditLogsClient({ initialLogs }: { initialLogs: AuditLog[] }) {
+export default function AuditLogsClient({
+  initialLogs,
+  status,
+}: {
+  initialLogs: AuditLog[];
+  status: AuditLogStatus;
+}) {
   const [filters, setFilters] = useState<FilterState>(EMPTY_FILTERS);
   const [selectedLog, setSelectedLog] = useState<AuditLog | null>(null);
 
@@ -159,6 +174,48 @@ export default function AuditLogsClient({ initialLogs }: { initialLogs: AuditLog
 
   return (
     <>
+      {status.readError && (
+        <div className="mb-4 rounded-lg border border-red-200 bg-red-50 p-4 flex items-start gap-3">
+          <AlertTriangle className="w-5 h-5 text-red-600 shrink-0 mt-0.5" />
+          <div className="text-sm">
+            <p className="font-bold text-red-800">The audit trail could not be read.</p>
+            <p className="text-red-700 mt-1">
+              This page is empty because the query failed — not because nothing has
+              happened. Events are most likely not being recorded either.
+            </p>
+            {status.tableMissing && (
+              <p className="text-red-700 mt-2">
+                The <code className="font-mono bg-red-100 px-1 rounded">audit_logs</code>{' '}
+                table does not exist. Run{' '}
+                <code className="font-mono bg-red-100 px-1 rounded">
+                  supabase/migrations/20260822_create_audit_logs.sql
+                </code>{' '}
+                in the Supabase SQL editor.
+              </p>
+            )}
+            <p className="text-red-600/80 mt-2 font-mono text-xs">{status.readError}</p>
+          </div>
+        </div>
+      )}
+
+      {!status.readError && status.writeFailures > 0 && (
+        <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 p-4 flex items-start gap-3">
+          <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+          <div className="text-sm">
+            <p className="font-bold text-amber-900">
+              {status.writeFailures} audit event{status.writeFailures !== 1 ? 's' : ''} failed to record.
+            </p>
+            <p className="text-amber-800 mt-1">
+              Reads are working, so the list below is real — but it is incomplete.
+              Counted since this server last started, so the true total may be higher.
+            </p>
+            {status.lastWriteError && (
+              <p className="text-amber-700/80 mt-2 font-mono text-xs">{status.lastWriteError}</p>
+            )}
+          </div>
+        </div>
+      )}
+
       <div className="rounded-lg border border-gray-200 bg-white shadow-sm overflow-hidden">
         <div className="p-4 border-b border-gray-200 bg-gray-50/70">
           <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
@@ -314,7 +371,11 @@ export default function AuditLogsClient({ initialLogs }: { initialLogs: AuditLog
               {filteredLogs.length === 0 && (
                 <tr>
                   <td colSpan={7} className="px-5 py-12 text-center text-sm font-medium text-gray-500">
-                    No audit logs match the selected filters.
+                    {status.readError
+                      ? 'Could not load the audit trail — see the error above.'
+                      : hasActiveFilters
+                        ? 'No audit logs match the selected filters.'
+                        : 'No events have been recorded yet.'}
                   </td>
                 </tr>
               )}
