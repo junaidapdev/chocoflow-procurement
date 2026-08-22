@@ -20,14 +20,15 @@
 -- where before they showed a confident wrong date.
 --
 -- ORDER OF WORK
---   1. Run STEP 1 below, read the result.
---   2. Run STEP 2 with the timestamp it gives you.
---   3. Run STEP 3 to confirm.
---   4. Re-run the corrected 20260822_payment_date_and_bank_account.sql. That is
---      now safe: it snapshots payment_batch_id before writing anything and
---      refuses to recover a date for any row an earlier run already touched, so
---      it will not re-stamp the rows you just cleared. Re-running is how you
---      pick up the hardened record_invoice_payment() and its grants.
+--   1. FIRST re-run the corrected 20260822_payment_date_and_bank_account.sql.
+--      Do this before anything here: it revokes public EXECUTE on
+--      record_invoice_payment, which until then is callable by anyone holding
+--      the anon key. Re-running is safe — the migration snapshots
+--      payment_batch_id before writing anything and will not recover a date for
+--      a row an earlier run already touched, so it cannot re-stamp these rows.
+--   2. Run STEP 1 below, read the result.
+--   3. Run STEP 2 with the timestamp it gives you.
+--   4. Run STEP 3 to confirm.
 -- ─────────────────────────────────────────────────────────────────────────────
 
 
