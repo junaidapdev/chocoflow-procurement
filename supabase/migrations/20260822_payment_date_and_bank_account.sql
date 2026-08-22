@@ -187,66 +187,72 @@ END
 $lockdown$;
 
 
--- ── 3. Snapshot updated_at BEFORE anything writes to invoices ───────────────
--- Step 6 recovers historical payment dates from updated_at. That only works
--- while updated_at still holds the payment timestamp — and public.invoices has
--- a BEFORE UPDATE trigger (update_invoices_updated_at) that resets it to now()
--- on ANY write, including step 4's batch-id backfill immediately below.
+-- ── 3. Backfill: payment_date from updated_at — MUST RUN FIRST ──────────────
+-- ⚠️  ORDER IS LOAD-BEARING. This step has to come before any other statement
+--     that writes to public.invoices.
 --
--- Reading updated_at after step 4 would stamp every recovered date with the
--- migration date — precisely the bug this migration exists to remove, and
--- unrecoverable afterwards, since the original value is overwritten in place.
--- Snapshotting first makes that safe structurally instead of depending on the
--- order these statements happen to appear in.
-
--- payment_batch_id is also captured, as it is read BEFORE this run writes
--- anything: a row that already has one was touched by an earlier run of this
--- migration, which means its updated_at is that run's timestamp rather than the
--- payment's. Step 6 uses this to refuse to "recover" a date from a value a
--- previous run already overwrote — which is what makes re-running safe, and
--- what stops a re-run from undoing the repair in
+-- For a Paid invoice that was never notified, nothing wrote to the row after
+-- the payment itself, so updated_at IS the payment timestamp, exactly. But
+-- public.invoices has a BEFORE UPDATE trigger (update_invoices_updated_at) that
+-- resets updated_at to now() on ANY write — so the moment steps 4 or 5 touch a
+-- row, that evidence is gone, overwritten in place. Reading it afterwards
+-- stamps every "recovered" date with the migration date: precisely the bug this
+-- migration exists to remove.
+--
+-- An earlier draft snapshotted updated_at into a TEMP table and read that
+-- instead, which is order-independent — but a temp table does not reliably
+-- survive between statements in the Supabase SQL editor, and the migration
+-- failed with "relation _chocoflow_paid_updated_at does not exist". Running
+-- first needs no snapshot at all.
+--
+-- RE-RUN SAFETY: payment_batch_id IS NULL is the test for "no previous run of
+-- this migration has touched this row", and it is read here while it still
+-- holds its pre-run value, because step 5 has not run yet. A row an earlier run
+-- already wrote to has an untrustworthy updated_at and is skipped — which is
+-- also what stops a re-run undoing the cleanup in
 -- 20260822b_repair_payment_date_regression.sql.
-DROP TABLE IF EXISTS _chocoflow_paid_updated_at;
-CREATE TEMP TABLE _chocoflow_paid_updated_at AS
-SELECT id, updated_at, payment_batch_id AS batch_id_before_this_run
-FROM public.invoices
-WHERE status = 'Paid';
+--
+-- Rows that WERE notified are left NULL rather than filled from a value we know
+-- is contaminated; the dashboards render those as "-".
+--
+-- If the notification columns don't exist, nothing was ever notified and
+-- updated_at is exact for every Paid row, so the filter is dropped rather than
+-- the whole step skipped.
+
+DO $do$
+DECLARE
+    v_has_notify_cols boolean := (
+        SELECT count(*) = 2
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'invoices'
+          AND column_name IN ('vendor_notified_at', 'salam_notified_at')
+    );
+BEGIN
+    EXECUTE format($backfill$
+        UPDATE public.invoices
+        SET payment_date = (updated_at AT TIME ZONE 'Asia/Riyadh')::date
+        WHERE status = 'Paid'
+          AND type = 'invoice'
+          AND payment_date IS NULL
+          AND payment_batch_id IS NULL
+          AND updated_at IS NOT NULL
+          %s;
+    $backfill$,
+    CASE
+        WHEN v_has_notify_cols
+        THEN 'AND vendor_notified_at IS NULL AND salam_notified_at IS NULL'
+        ELSE ''
+    END);
+END
+$do$;
 
 
--- ── 4. Backfill: payment_batch_id ───────────────────────────────────────────
--- Everything paid in one transfer shares a receipt_url, so that groups a batch.
-
-WITH batches AS (
-    SELECT receipt_url, gen_random_uuid() AS batch_id
-    FROM public.invoices
-    WHERE status = 'Paid'
-      AND type = 'invoice'
-      AND receipt_url IS NOT NULL
-      AND payment_batch_id IS NULL
-    GROUP BY receipt_url
-)
-UPDATE public.invoices inv
-SET payment_batch_id = b.batch_id
-FROM batches b
-WHERE inv.receipt_url = b.receipt_url
-  AND inv.status = 'Paid'
-  AND inv.type = 'invoice'
-  AND inv.payment_batch_id IS NULL;
-
-UPDATE public.invoices ret
-SET payment_batch_id = inv.payment_batch_id
-FROM public.invoices inv
-WHERE ret.type = 'return'
-  AND ret.status = 'Paid'
-  AND ret.payment_batch_id IS NULL
-  AND ret.applied_to_invoice_id = inv.id
-  AND inv.payment_batch_id IS NOT NULL;
-
-
--- ── 5. Backfill: payment_date from the audit trail ──────────────────────────
+-- ── 4. Backfill: payment_date from the audit trail ──────────────────────────
 -- A completed payment writes a `payment.batch_completed` audit row whose
 -- created_at is the real moment of payment and whose metadata lists the invoice
--- ids. That is an accurate source; updated_at is only a fallback.
+-- ids. More precise than step 3, and it also covers invoices that WERE notified
+-- — but it only reaches rows step 3 left NULL, so the two never disagree.
 --
 -- audit_logs may not exist: it ships in schema.sql, the fresh-install script,
 -- so a live project created before that section was added never got the table.
@@ -256,7 +262,7 @@ WHERE ret.type = 'return'
 DO $do$
 BEGIN
     IF to_regclass('public.audit_logs') IS NULL THEN
-        RAISE NOTICE 'audit_logs not found - skipping the audit-trail backfill. Historical payment dates will come only from step 6.';
+        RAISE NOTICE 'audit_logs not found - skipping the audit-trail backfill. Historical payment dates come from step 3 only.';
         RETURN;
     END IF;
 
@@ -303,51 +309,39 @@ END
 $do$;
 
 
--- ── 6. Backfill: payments with no audit row ─────────────────────────────────
--- For a Paid invoice that was never notified, nothing wrote to the row after
--- the payment itself - so its snapshotted updated_at IS the payment timestamp,
--- exactly. Reads the step-3 snapshot, never the live column, which step 4 has
--- since overwritten.
---
--- Rows that WERE notified are left NULL rather than filled with a value we know
--- is contaminated; the dashboards render those as "-".
---
--- If the notification columns don't exist either, then nothing was ever
--- notified and the snapshot is exact for every Paid row - so the filter is
--- dropped rather than the whole step skipped.
+-- ── 5. Backfill: payment_batch_id ───────────────────────────────────────────
+-- Everything paid in one transfer shares a receipt_url, so that groups a batch.
+-- Runs after the date backfills because it writes to invoices, and so destroys
+-- the updated_at that step 3 depends on. Do not move it above step 3.
 
-DO $do$
-DECLARE
-    v_has_notify_cols boolean := (
-        SELECT count(*) = 2
-        FROM information_schema.columns
-        WHERE table_schema = 'public'
-          AND table_name = 'invoices'
-          AND column_name IN ('vendor_notified_at', 'salam_notified_at')
-    );
-BEGIN
-    EXECUTE format($backfill$
-        UPDATE public.invoices inv
-        SET payment_date = (snap.updated_at AT TIME ZONE 'Asia/Riyadh')::date
-        FROM _chocoflow_paid_updated_at snap
-        WHERE snap.id = inv.id
-          AND inv.status = 'Paid'
-          AND inv.type = 'invoice'
-          AND inv.payment_date IS NULL
-          AND snap.updated_at IS NOT NULL
-          AND snap.batch_id_before_this_run IS NULL
-          %s;
-    $backfill$,
-    CASE
-        WHEN v_has_notify_cols
-        THEN 'AND inv.vendor_notified_at IS NULL AND inv.salam_notified_at IS NULL'
-        ELSE ''
-    END);
-END
-$do$;
+WITH batches AS (
+    SELECT receipt_url, gen_random_uuid() AS batch_id
+    FROM public.invoices
+    WHERE status = 'Paid'
+      AND type = 'invoice'
+      AND receipt_url IS NOT NULL
+      AND payment_batch_id IS NULL
+    GROUP BY receipt_url
+)
+UPDATE public.invoices inv
+SET payment_batch_id = b.batch_id
+FROM batches b
+WHERE inv.receipt_url = b.receipt_url
+  AND inv.status = 'Paid'
+  AND inv.type = 'invoice'
+  AND inv.payment_batch_id IS NULL;
+
+UPDATE public.invoices ret
+SET payment_batch_id = inv.payment_batch_id
+FROM public.invoices inv
+WHERE ret.type = 'return'
+  AND ret.status = 'Paid'
+  AND ret.payment_batch_id IS NULL
+  AND ret.applied_to_invoice_id = inv.id
+  AND inv.payment_batch_id IS NOT NULL;
 
 
--- ── 7. Applied return credits inherit their invoice's payment date ──────────
+-- ── 6. Applied return credits inherit their invoice's payment date ──────────
 
 UPDATE public.invoices ret
 SET payment_date = inv.payment_date
@@ -357,8 +351,6 @@ WHERE ret.type = 'return'
   AND ret.payment_date IS NULL
   AND ret.applied_to_invoice_id = inv.id
   AND inv.payment_date IS NOT NULL;
-
-DROP TABLE IF EXISTS _chocoflow_paid_updated_at;
 
 -- Historical bank accounts cannot be recovered — no record of them exists.
 -- They stay NULL and display as "Not recorded".

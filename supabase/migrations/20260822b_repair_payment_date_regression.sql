@@ -23,9 +23,10 @@
 --   1. FIRST re-run the corrected 20260822_payment_date_and_bank_account.sql.
 --      Do this before anything here: it revokes public EXECUTE on
 --      record_invoice_payment, which until then is callable by anyone holding
---      the anon key. Re-running is safe — the migration snapshots
---      payment_batch_id before writing anything and will not recover a date for
---      a row an earlier run already touched, so it cannot re-stamp these rows.
+--      the anon key. Re-running is safe — its date backfill now runs before
+--      anything else writes to invoices, and skips any row that already has a
+--      payment_batch_id, i.e. any row an earlier run already touched. These
+--      rows all have one, so it cannot re-stamp them.
 --   2. Run STEP 1 below, read the result.
 --   3. Run STEP 2 with the timestamp it gives you.
 --   4. Run STEP 3 to confirm.
