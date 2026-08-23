@@ -38,6 +38,7 @@ export const BRANCHES = [
   'العوالي',
   'المدينة المنورة',
   'الصالحية',
+  'الخرمة',
 ];
 
 // Map Arabic brand names to safe English ASCII names. Used for:
