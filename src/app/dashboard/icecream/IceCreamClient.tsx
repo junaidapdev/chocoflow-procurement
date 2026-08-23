@@ -383,9 +383,15 @@ export default function IceCreamClient({
 }
 
 // ── The sheet ──────────────────────────────────────────────────────────────
-// Deliberately mirrors the Excel this replaces: a block per branch, then the
-// salesman summary. Accounts has been reading that layout for years, and
-// changing it is a separate conversation from changing how it gets filled in.
+// This is the artefact the whole module exists to produce: the manager
+// screenshots it and sends it to accounts on WhatsApp. So it is designed as a
+// printed statement, not as a dashboard widget — quiet rules instead of filled
+// bars, one line per bill, and enough density that both cities fit in a single
+// phone screenshot without scrolling.
+//
+// It still mirrors the Excel it replaces: a section per branch and salesman,
+// a total under each, and the salesman summary alongside. Accounts has read
+// that shape for years and changing it is a separate conversation.
 
 function SheetTable({
   sheet, duplicateIds, onDelete, onPayNow, busy, compact,
@@ -400,150 +406,169 @@ function SheetTable({
   const interactive = !compact;
 
   return (
-    <div>
-      <div className="text-center mb-6 pb-4 border-b-2 border-gray-900">
-        <h2 className="text-xl font-black text-gray-900 uppercase tracking-wide">
-          Kayan Co. — Binzagar Ice Cream {ICE_CITY_LABELS[sheet.city]}
-        </h2>
-        {sheet.periodStart && (
-          <p className="text-sm text-gray-500 mt-1 tabular-nums">
-            {formatPaymentDate(sheet.periodStart)} — {formatPaymentDate(sheet.periodEnd)}
-          </p>
-        )}
-      </div>
+    // Held to the width the content actually needs rather than stretched to the
+    // container. A full-width row pushes the date hard left and the amount hard
+    // right, leaving a band of dead space between them that the eye has to
+    // cross on every line — and makes a nine-bill sheet look emptier than a
+    // paper one. Roughly 22rem is enough for the longest branch name beside a
+    // six-figure amount.
+    <div className="inline-block min-w-0 max-w-full text-gray-900">
+      <header className="mb-5">
+        <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">
+          Kayan Co. · Binzagar Ice Cream
+        </p>
+        <div className="mt-1.5 flex items-end justify-between gap-6 border-b-2 border-gray-900 pb-1.5">
+          <h2 className="text-lg font-black uppercase tracking-tight leading-none">
+            {ICE_CITY_LABELS[sheet.city]}
+          </h2>
+          {sheet.periodStart && (
+            <p className="text-[11px] tabular-nums text-gray-400 whitespace-nowrap">
+              {sheet.periodStart === sheet.periodEnd
+                ? formatPaymentDate(sheet.periodStart, 'd MMM yyyy')
+                : `${formatPaymentDate(sheet.periodStart, 'd MMM')} — ${formatPaymentDate(sheet.periodEnd, 'd MMM yyyy')}`}
+            </p>
+          )}
+        </div>
+      </header>
 
-      <div className={compact ? 'grid gap-6 sm:grid-cols-[1fr_auto]' : 'space-y-5'}>
-        <div className="space-y-5">
+      <div className="flex flex-col gap-7 sm:flex-row sm:items-start sm:gap-8">
+        {/* The interactive view carries two action buttons per row, so it needs
+            a little more room than the screenshot view to keep the same gap
+            between date and amount. */}
+        <div className={`w-full ${interactive ? 'sm:w-[21rem]' : 'sm:w-[18rem]'}`}>
           {sheet.blocks.map(block => (
-            // A branch whose bills span a salesman reassignment produces one
-            // block per salesman, so the branch id alone is no longer unique.
-            <div
-              key={`${block.branchId}|${block.salesmanName}`}
-              className="border border-gray-200 rounded-xl overflow-hidden"
-            >
-              <div className="bg-gray-900 text-white px-4 py-2.5 flex flex-wrap items-baseline gap-x-3">
-                <span className="font-black uppercase tracking-wide text-sm">
+            <section key={`${block.branchId}|${block.salesmanName}`} className="mb-5 last:mb-0">
+              <div className="flex items-baseline justify-between gap-3 border-b border-gray-300 pb-1">
+                <h3 className="text-[12px] font-bold uppercase tracking-wider truncate">
                   {block.branchName}
-                </span>
-                {block.branchNameAr && (
-                  <span className="text-gray-300 text-sm">{block.branchNameAr}</span>
-                )}
-                <div className="flex-1" />
-                <span className="text-xs text-gray-300 uppercase tracking-wider">
+                  {block.branchNameAr && (
+                    <span className="ms-2 font-normal normal-case tracking-normal text-gray-400">
+                      {block.branchNameAr}
+                    </span>
+                  )}
+                </h3>
+                <span className="text-[10px] uppercase tracking-wider text-gray-400 whitespace-nowrap">
                   {block.salesmanName}
                 </span>
               </div>
 
               {block.bills.length === 0 ? (
-                <div className="px-4 py-3 text-sm text-gray-400 italic">Nothing due</div>
+                <div className="flex items-baseline justify-between py-1.5 text-[12px] text-gray-300">
+                  <span className="italic">Nothing due</span>
+                  <span className="tabular-nums">0.00</span>
+                </div>
               ) : (
-                <table className="w-full text-sm">
-                  <tbody className="divide-y divide-gray-100">
-                    {block.bills.map(bill => {
-                      const isDupe = duplicateIds?.has(bill.id);
-                      return (
-                        <tr key={bill.id} className={isDupe ? 'bg-amber-50' : ''}>
-                          <td className="px-4 py-2.5 tabular-nums text-gray-700 whitespace-nowrap">
-                            {formatPaymentDate(bill.bill_date, 'dd/MM/yyyy')}
-                            {isDupe && (
-                              <span
-                                className="ms-2 inline-flex items-center"
-                                title="Same branch, date and amount as another bill"
-                              >
-                                <AlertTriangle className="w-3.5 h-3.5 text-amber-500" />
-                              </span>
-                            )}
-                          </td>
-                          <td className="px-4 py-2.5 text-right tabular-nums font-bold text-gray-900">
-                            {formatAmount(bill.amount)}
-                          </td>
-                          {interactive && (
-                            <td className="px-3 py-2.5 w-px whitespace-nowrap">
-                              <div className="flex items-center gap-1 justify-end">
-                                <button
-                                  onClick={() => onPayNow?.(bill.id)}
-                                  disabled={busy === `urgent:${bill.id}`}
-                                  title="Pay this bill on its own, now"
-                                  className="p-1.5 rounded-lg text-gray-400 hover:text-rose-600 hover:bg-rose-50 disabled:opacity-50"
-                                >
-                                  {busy === `urgent:${bill.id}` ? (
-                                    <Loader2 className="w-4 h-4 animate-spin" />
-                                  ) : (
-                                    <Zap className="w-4 h-4" />
-                                  )}
-                                </button>
-                                <button
-                                  onClick={() => onDelete?.(bill.id)}
-                                  disabled={busy === `delete:${bill.id}`}
-                                  title="Remove this bill"
-                                  className="p-1.5 rounded-lg text-gray-400 hover:text-red-600 hover:bg-red-50 disabled:opacity-50"
-                                >
-                                  <Trash2 className="w-4 h-4" />
-                                </button>
-                              </div>
-                            </td>
+                <>
+                  {block.bills.map(bill => {
+                    const isDupe = duplicateIds?.has(bill.id);
+                    return (
+                      <div
+                        key={bill.id}
+                        className="flex items-center justify-between gap-3 border-b border-gray-100 py-1.5 last:border-b-0"
+                      >
+                        <span className="flex items-center gap-1.5 text-[13px] tabular-nums text-gray-500">
+                          {formatPaymentDate(bill.bill_date, 'dd/MM/yyyy')}
+                          {isDupe && (
+                            <AlertTriangle
+                              className="h-3 w-3 text-amber-500"
+                              // Title rather than a filled row: a duplicate is a
+                              // question for the manager, not a state the sheet
+                              // sent to accounts should shout about.
+                            >
+                              <title>Same branch, date and amount as another bill</title>
+                            </AlertTriangle>
                           )}
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                  <tfoot>
-                    <tr className="bg-gray-50 border-t-2 border-gray-300">
-                      <td className="px-4 py-2.5 font-black uppercase text-xs tracking-wider text-gray-600">
-                        Total
-                      </td>
-                      <td className="px-4 py-2.5 text-right tabular-nums font-black text-gray-900">
+                        </span>
+
+                        <span className="flex items-center gap-1">
+                          <span className="text-[13px] font-semibold tabular-nums">
+                            {formatAmount(bill.amount)}
+                          </span>
+                          {interactive && (
+                            <span className="flex w-[3.25rem] justify-end gap-0.5">
+                              <button
+                                onClick={() => onPayNow?.(bill.id)}
+                                disabled={busy === `urgent:${bill.id}`}
+                                title="Pay this bill on its own, now"
+                                className="rounded p-1 text-gray-300 transition-colors hover:bg-rose-50 hover:text-rose-600 disabled:opacity-50"
+                              >
+                                {busy === `urgent:${bill.id}` ? (
+                                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                ) : (
+                                  <Zap className="h-3.5 w-3.5" />
+                                )}
+                              </button>
+                              <button
+                                onClick={() => onDelete?.(bill.id)}
+                                disabled={busy === `delete:${bill.id}`}
+                                title="Remove this bill"
+                                className="rounded p-1 text-gray-300 transition-colors hover:bg-red-50 hover:text-red-600 disabled:opacity-50"
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </button>
+                            </span>
+                          )}
+                        </span>
+                      </div>
+                    );
+                  })}
+
+                  <div className="mt-1 flex items-baseline justify-between border-t border-gray-300 pt-1.5">
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-gray-400">
+                      Total
+                    </span>
+                    <span className="flex items-center gap-1">
+                      <span className="text-[13px] font-black tabular-nums">
                         {formatAmount(block.total)}
-                      </td>
-                      {interactive && <td />}
-                    </tr>
-                  </tfoot>
-                </table>
+                      </span>
+                      {interactive && <span className="w-[3.25rem]" />}
+                    </span>
+                  </div>
+                </>
               )}
-            </div>
+            </section>
           ))}
         </div>
 
         {/* Salesman summary. One row per branch assignment, not per salesman —
             a salesman covering two branches appears twice, exactly as in the
             sheet accounts already receives. */}
-        <div className={compact ? 'sm:w-64' : 'pt-2'}>
-          <table className="w-full text-sm border border-gray-300 rounded-xl overflow-hidden">
-            <thead>
-              <tr className="bg-yellow-200">
-                <th className="px-3 py-2 text-left text-xs font-black uppercase tracking-wider">
-                  Salesman
-                </th>
-                <th className="px-3 py-2 text-right text-xs font-black uppercase tracking-wider">
-                  Amount
-                </th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-200">
-              {sheet.summary.map((row, i) => (
-                <tr key={`${row.branchName}-${i}`}>
-                  <td className="px-3 py-2">
-                    <div className="font-semibold text-gray-900">{row.salesmanName}</div>
-                    <div className="text-[11px] text-gray-400 uppercase tracking-wide">
-                      {row.branchName}
-                    </div>
-                  </td>
-                  <td className="px-3 py-2 text-right tabular-nums font-bold text-gray-900">
-                    {row.total > 0 ? formatAmount(row.total) : '—'}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-            <tfoot>
-              <tr className="bg-orange-200 border-t-2 border-gray-400">
-                <td className="px-3 py-2.5 font-black uppercase text-xs tracking-wider">Total</td>
-                <td className="px-3 py-2.5 text-right tabular-nums font-black text-base">
-                  {formatAmount(sheet.grandTotal)}
-                </td>
-              </tr>
-            </tfoot>
-          </table>
-        </div>
+        <aside className="w-full sm:w-[13rem] sm:shrink-0">
+          <div className="flex items-baseline justify-between border-b-2 border-gray-900 pb-1">
+            <span className="text-[10px] font-bold uppercase tracking-wider">Salesman</span>
+            <span className="text-[10px] font-bold uppercase tracking-wider text-gray-400">
+              Amount
+            </span>
+          </div>
+
+          {sheet.summary.map((row, i) => (
+            <div
+              key={`${row.branchName}-${row.salesmanName}-${i}`}
+              className="flex items-baseline justify-between gap-3 border-b border-gray-100 py-1.5"
+            >
+              <span className="min-w-0">
+                <span className="block truncate text-[12px] leading-tight">{row.salesmanName}</span>
+                <span className="block text-[9px] uppercase tracking-wider text-gray-400">
+                  {row.branchName}
+                </span>
+              </span>
+              <span
+                className={`text-[12px] tabular-nums ${
+                  row.total > 0 ? 'font-semibold' : 'text-gray-300'
+                }`}
+              >
+                {row.total > 0 ? formatAmount(row.total) : '—'}
+              </span>
+            </div>
+          ))}
+
+          <div className="mt-1.5 flex items-baseline justify-between border-t-2 border-gray-900 pt-2">
+            <span className="text-[10px] font-bold uppercase tracking-wider">Total</span>
+            <span className="text-base font-black tabular-nums leading-none">
+              {formatAmount(sheet.grandTotal)}
+            </span>
+          </div>
+        </aside>
       </div>
     </div>
   );
