@@ -2,12 +2,14 @@ import { headers } from 'next/headers';
 import { redirect } from 'next/navigation';
 import { createClient } from '@/lib/supabase-server';
 import { USER_PROFILE_HEADER } from '@/lib/constants';
+import { hasActiveIceMembership } from '@/lib/icecream';
 import Sidebar from './Sidebar';
 
 type DashboardProfile = {
-  role: string;
+  role: string | null;
   full_name?: string | null;
   email?: string | null;
+  is_ice_member?: boolean;
 };
 
 export default async function DashboardLayout({ children }: { children: React.ReactNode }) {
@@ -36,7 +38,7 @@ export default async function DashboardLayout({ children }: { children: React.Re
 
     const { data } = await supabase
       .from('profiles')
-      .select('role, full_name, email')
+      .select('role, full_name, email, ice_members(active)')
       .eq('id', user.id)
       .single();
 
@@ -44,7 +46,12 @@ export default async function DashboardLayout({ children }: { children: React.Re
       redirect('/unauthorized');
     }
 
-    profile = data as DashboardProfile;
+    const { ice_members: iceMembership, ...profileFields } = data as Record<string, unknown>;
+
+    profile = {
+      ...profileFields,
+      is_ice_member: hasActiveIceMembership(iceMembership),
+    } as DashboardProfile;
   }
 
   return (
