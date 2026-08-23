@@ -406,13 +406,19 @@ function SheetTable({
   const interactive = !compact;
 
   return (
-    <div className="text-gray-900">
-      <header className="mb-6">
+    // Held to the width the content actually needs rather than stretched to the
+    // container. A full-width row pushes the date hard left and the amount hard
+    // right, leaving a band of dead space between them that the eye has to
+    // cross on every line — and makes a nine-bill sheet look emptier than a
+    // paper one. Roughly 22rem is enough for the longest branch name beside a
+    // six-figure amount.
+    <div className="inline-block min-w-0 max-w-full text-gray-900">
+      <header className="mb-5">
         <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">
           Kayan Co. · Binzagar Ice Cream
         </p>
-        <div className="mt-1.5 flex items-end justify-between gap-4 border-b-2 border-gray-900 pb-2">
-          <h2 className="text-xl font-black uppercase tracking-tight leading-none">
+        <div className="mt-1.5 flex items-end justify-between gap-6 border-b-2 border-gray-900 pb-1.5">
+          <h2 className="text-lg font-black uppercase tracking-tight leading-none">
             {ICE_CITY_LABELS[sheet.city]}
           </h2>
           {sheet.periodStart && (
@@ -425,8 +431,11 @@ function SheetTable({
         </div>
       </header>
 
-      <div className="grid gap-x-10 gap-y-8 lg:grid-cols-[minmax(0,1fr)_13rem] lg:items-start">
-        <div>
+      <div className="flex flex-col gap-7 sm:flex-row sm:items-start sm:gap-8">
+        {/* The interactive view carries two action buttons per row, so it needs
+            a little more room than the screenshot view to keep the same gap
+            between date and amount. */}
+        <div className={`w-full ${interactive ? 'sm:w-[21rem]' : 'sm:w-[18rem]'}`}>
           {sheet.blocks.map(block => (
             <section key={`${block.branchId}|${block.salesmanName}`} className="mb-5 last:mb-0">
               <div className="flex items-baseline justify-between gap-3 border-b border-gray-300 pb-1">
@@ -524,7 +533,7 @@ function SheetTable({
         {/* Salesman summary. One row per branch assignment, not per salesman —
             a salesman covering two branches appears twice, exactly as in the
             sheet accounts already receives. */}
-        <aside className="lg:sticky lg:top-6">
+        <aside className="w-full sm:w-[13rem] sm:shrink-0">
           <div className="flex items-baseline justify-between border-b-2 border-gray-900 pb-1">
             <span className="text-[10px] font-bold uppercase tracking-wider">Salesman</span>
             <span className="text-[10px] font-bold uppercase tracking-wider text-gray-400">
