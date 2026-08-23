@@ -4,9 +4,16 @@ import { useState } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
-import { FileText, CheckSquare, CreditCard, Building2, LogOut, Menu, X, Banknote, History } from 'lucide-react';
+import { FileText, CheckSquare, CreditCard, Building2, LogOut, Menu, X, Banknote, History, IceCream } from 'lucide-react';
 
-export default function Sidebar({ profile }: { profile: { role: string; full_name?: string | null; email?: string | null } }) {
+type SidebarProfile = {
+  role: string | null;
+  full_name?: string | null;
+  email?: string | null;
+  is_ice_member?: boolean;
+};
+
+export default function Sidebar({ profile }: { profile: SidebarProfile }) {
   const pathname = usePathname();
   const router = useRouter();
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -31,6 +38,23 @@ export default function Sidebar({ profile }: { profile: { role: string; full_nam
     { name: 'Audit Logs', href: '/dashboard/logs', roles: ['salam'], icon: History },
   ];
 
+  // Ice cream is gated on membership rather than on a role, so it is appended
+  // separately instead of joining the role-filtered list above.
+  const visibleItems = navItems.filter(item => !!profile.role && item.roles.includes(profile.role));
+
+  if (profile.is_ice_member) {
+    visibleItems.push({
+      name: 'Ice Cream',
+      href: '/dashboard/icecream',
+      roles: [],
+      icon: IceCream,
+    });
+  }
+
+  // The ice cream manager has no chocolate role, so `role` renders empty for
+  // them. Naming the module they do have access to is more use than a blank.
+  const roleLabel = profile.role || (profile.is_ice_member ? 'Ice Cream' : 'No access');
+
   const sidebarContent = (
     <>
       <div className="p-6">
@@ -39,9 +63,7 @@ export default function Sidebar({ profile }: { profile: { role: string; full_nam
       </div>
 
       <nav className="flex-1 px-4 space-y-2 mt-4">
-        {navItems.map((item) => {
-          if (!item.roles.includes(profile.role)) return null;
-          
+        {visibleItems.map((item) => {
           const isActive = pathname.startsWith(item.href);
           const Icon = item.icon;
 
@@ -62,7 +84,7 @@ export default function Sidebar({ profile }: { profile: { role: string; full_nam
       <div className="p-4 border-t border-gray-100">
         <div className="bg-gray-50 rounded-xl p-4 flex flex-col">
           <span className="text-sm font-bold text-gray-900 truncate">{profile.full_name || profile.email}</span>
-          <span className="text-xs text-gray-500 uppercase tracking-wider font-semibold mt-0.5">{profile.role}</span>
+          <span className="text-xs text-gray-500 uppercase tracking-wider font-semibold mt-0.5">{roleLabel}</span>
           
           <button
             onClick={handleLogout}

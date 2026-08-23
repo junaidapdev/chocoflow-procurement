@@ -19,6 +19,16 @@ export const DASHBOARD_ROUTE_ROLES: { prefix: string; roles: ProfileRole[] }[] =
   { prefix: '/dashboard/logs', roles: ['salam'] },
 ];
 
+// The ice cream module is gated on membership of public.ice_members rather than
+// on a `role` value, so it is checked separately from the table above.
+//
+// profiles.role holds exactly one value per person. Adding 'icecream' to it
+// would force anyone who needs both modules to pick one — the ice cream manager
+// carries a NULL role (which the table above already rejects from every
+// chocolate route), while an existing chocolate user can be added to the ice
+// cream list later without their role changing at all.
+export const ICE_DASHBOARD_PREFIX = '/dashboard/icecream';
+
 export const BRANCHES = [
   'السلامة',
   'الحرمين',

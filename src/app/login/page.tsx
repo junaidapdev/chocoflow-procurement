@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
+import { hasActiveIceMembership } from '@/lib/icecream';
 import { Loader2, AlertCircle } from 'lucide-react';
 
 export default function LoginPage() {
@@ -28,10 +29,14 @@ export default function LoginPage() {
       // We also check their role immediately for a quick client bounce (opt-in)
       const { data: profile } = await supabase
         .from('profiles')
-        .select('role')
+        .select('role, ice_members(active)')
         .eq('id', data.user.id)
         .single();
-        
+
+      const isIceMember = hasActiveIceMembership(
+        (profile as Record<string, unknown> | null)?.ice_members
+      );
+
       if (profile?.role === 'amin') {
         router.push('/dashboard/verify');
       } else if (profile?.role === 'salam') {
@@ -40,6 +45,11 @@ export default function LoginPage() {
         router.push('/dashboard/finance');
       } else if (profile?.role === 'payer') {
         router.push('/dashboard/payments');
+      } else if (isIceMember) {
+        // The ice cream manager has no chocolate role by design, so they fall
+        // through every branch above. Checked last so that a chocolate user who
+        // is also on the ice cream list still lands on their own dashboard.
+        router.push('/dashboard/icecream');
       } else {
         router.push('/unauthorized');
       }
