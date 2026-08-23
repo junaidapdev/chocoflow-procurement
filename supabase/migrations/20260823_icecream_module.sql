@@ -245,11 +245,51 @@ CREATE POLICY "Members can read own membership"
 -- p_bill_ids restricts it to specific bills, which is how "Pay Now" on a single
 -- urgent bill works: same function, one id, kind = 'urgent'.
 
+-- Reference numbers come from a per-city sequence, not from count(*) + 1.
+--
+-- Counting cannot be made safe by the row locks above: two approvals over
+-- DISJOINT bill sets in the same city lock different rows, so they do not
+-- serialize against each other. Both read the same count, both build the same
+-- reference, and the second INSERT dies on the UNIQUE constraint — rejecting a
+-- valid urgent payment whose bill was never batched. A sequence hands out
+-- distinct values regardless of what else is running.
+--
+-- Sequences are non-transactional, so a rolled-back approval leaves a gap in
+-- the numbering. That is the correct trade here: a reference is a handle for a
+-- WhatsApp conversation, not an audited count of anything.
+DO $sequences$
+DECLARE
+    c    text;
+    v_max bigint;
+BEGIN
+    FOREACH c IN ARRAY ARRAY['makkah', 'jeddah'] LOOP
+        EXECUTE format('CREATE SEQUENCE IF NOT EXISTS public.ice_batch_ref_%s', c);
+
+        -- Re-runnable, and correct on a database that already numbered batches
+        -- the old way: resume above the highest reference already issued.
+        EXECUTE format(
+            'SELECT coalesce(max(substring(reference from ''[0-9]+$'')::bigint), 0)
+               FROM public.ice_batches WHERE city = %L', c
+        ) INTO v_max;
+
+        IF v_max > 0 THEN
+            EXECUTE format('SELECT setval(''public.ice_batch_ref_%s'', %s, true)', c, v_max);
+        END IF;
+    END LOOP;
+END
+$sequences$;
+
+-- The 4-argument version is replaced by one that also stores the frozen sheet.
+-- CREATE OR REPLACE cannot change a signature, so the old overload has to go —
+-- otherwise both exist and PostgREST resolves calls to whichever matches.
+DROP FUNCTION IF EXISTS public.ice_approve_batch(text, text, uuid, uuid[]);
+
 CREATE OR REPLACE FUNCTION public.ice_approve_batch(
     p_city      text,
     p_kind      text,
     p_actor     uuid,
-    p_bill_ids  uuid[] DEFAULT NULL
+    p_bill_ids  uuid[] DEFAULT NULL,
+    p_snapshot  jsonb  DEFAULT NULL
 ) RETURNS uuid AS $$
 DECLARE
     v_batch_id  uuid;
@@ -277,8 +317,14 @@ BEGIN
     -- neither caveat.
     --
     -- FOR UPDATE lives in the subquery because Postgres rejects it alongside an
-    -- aggregate. ORDER BY gives concurrent approvals a consistent lock order,
-    -- so two of them queue instead of deadlocking.
+    -- aggregate. ORDER BY gives a consistent lock order, so two approvals over
+    -- OVERLAPPING bill sets queue instead of deadlocking — the second then
+    -- re-reads under READ COMMITTED, finds the rows already batched, and fails
+    -- with a clean domain error.
+    --
+    -- These locks say nothing about approvals over DISJOINT sets: they take no
+    -- common lock and run fully in parallel. That is why the reference below
+    -- must not be derived by counting rows.
     SELECT array_agg(locked.id)
       INTO v_ids
       FROM (
@@ -313,15 +359,24 @@ BEGIN
      WHERE id = ANY(v_ids);
 
     -- Human-readable handle for the WhatsApp conversation ("IC-JEDDAH-0007"),
-    -- so the manager and accounts can refer to a sheet by name.
+    -- so the manager and accounts can refer to a sheet by name. p_city is
+    -- validated against a fixed list above, so building the sequence name from
+    -- it cannot inject.
     v_reference := 'IC-' || upper(p_city) || '-' || to_char(
-        (SELECT count(*) + 1 FROM public.ice_batches WHERE city = p_city), 'FM0000'
+        nextval(('public.ice_batch_ref_' || p_city)::regclass), 'FM0000'
     );
 
+    -- The snapshot is written WITH the batch, not in a follow-up statement.
+    -- Approval freezing the sheet is this module's whole premise — the manager
+    -- sends a screenshot and keeps no file — so a batch that committed without
+    -- its frozen copy would leave no record at all of what accounts was asked
+    -- to pay, while still reporting success.
     INSERT INTO public.ice_batches
-        (city, kind, status, reference, period_start, period_end, total_amount, bill_count, approved_by)
+        (city, kind, status, reference, period_start, period_end,
+         total_amount, bill_count, approved_by, snapshot)
     VALUES
-        (p_city, p_kind, 'approved', v_reference, v_from, v_to, v_total, v_count, p_actor)
+        (p_city, p_kind, 'approved', v_reference, v_from, v_to,
+         v_total, v_count, p_actor, p_snapshot)
     RETURNING id INTO v_batch_id;
 
     UPDATE public.ice_bills
@@ -339,6 +394,82 @@ BEGIN
     END IF;
 
     RETURN v_batch_id;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp;
+
+
+-- ── 7b. Submitting a bill, atomically ───────────────────────────────────────
+-- Validates the branch, enforces the per-branch daily cap, resolves the current
+-- salesman and inserts — in one transaction, under an advisory lock keyed on
+-- the branch.
+--
+-- The cap cannot be enforced by counting in the API and inserting afterwards:
+-- concurrent submissions all read the same count before any of them commits, so
+-- the check passes for all of them and the limit is not a limit. The advisory
+-- lock serialises submissions per branch, which is the smallest scope that
+-- makes the count meaningful, and it costs nothing when submissions are not
+-- actually concurrent — which, ten branches filing a bill a day, is nearly
+-- always.
+--
+-- p_daily_cap NULL skips the check entirely: that is the signed-in manager
+-- entering a backlog by hand, which is exactly what the cap must not block.
+
+CREATE OR REPLACE FUNCTION public.ice_submit_bill(
+    p_branch_id    uuid,
+    p_bill_date    date,
+    p_amount       numeric,
+    p_submitted_by text,
+    p_source       text,
+    p_daily_cap    int DEFAULT NULL
+) RETURNS uuid AS $$
+DECLARE
+    v_bill_id     uuid;
+    v_active      boolean;
+    v_today_count int;
+    v_salesman    uuid;
+BEGIN
+    IF p_source NOT IN ('link', 'manual') THEN
+        RAISE EXCEPTION 'Unknown bill source: %', p_source;
+    END IF;
+
+    SELECT active INTO v_active FROM public.ice_branches WHERE id = p_branch_id;
+
+    IF v_active IS NULL OR NOT v_active THEN
+        RAISE EXCEPTION 'branch_unavailable';
+    END IF;
+
+    IF p_daily_cap IS NOT NULL THEN
+        -- Held until the transaction ends, so the count below cannot be stale
+        -- by the time the insert lands.
+        PERFORM pg_advisory_xact_lock(hashtext('ice_bill_submit'), hashtext(p_branch_id::text));
+
+        -- "Today" is the Riyadh day, not the UTC one. The business runs in
+        -- Riyadh (UTC+3), so a UTC-midnight boundary would leave the first
+        -- three hours of every local day uncounted.
+        SELECT count(*) INTO v_today_count
+          FROM public.ice_bills
+         WHERE branch_id = p_branch_id
+           AND (created_at AT TIME ZONE 'Asia/Riyadh')::date
+             = (now() AT TIME ZONE 'Asia/Riyadh')::date;
+
+        IF v_today_count >= p_daily_cap THEN
+            RAISE EXCEPTION 'daily_cap_reached';
+        END IF;
+    END IF;
+
+    -- Resolved now and stored on the bill: reassigning a salesman later must
+    -- not change which sheets they appear on.
+    SELECT salesman_id INTO v_salesman
+      FROM public.ice_branch_salesmen
+     WHERE branch_id = p_branch_id AND effective_to IS NULL;
+
+    INSERT INTO public.ice_bills
+        (branch_id, salesman_id, bill_date, amount, status, source, submitted_by_name)
+    VALUES
+        (p_branch_id, v_salesman, p_bill_date, p_amount, 'pending', p_source, p_submitted_by)
+    RETURNING id INTO v_bill_id;
+
+    RETURN v_bill_id;
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp;
 
@@ -414,7 +545,7 @@ BEGIN
         FROM pg_proc p
         JOIN pg_namespace n ON n.oid = p.pronamespace
         WHERE n.nspname = 'public'
-          AND p.proname IN ('ice_approve_batch', 'ice_record_payment')
+          AND p.proname IN ('ice_approve_batch', 'ice_record_payment', 'ice_submit_bill')
     LOOP
         EXECUTE format('REVOKE ALL ON FUNCTION %s FROM PUBLIC', r.sig);
         EXECUTE format('REVOKE ALL ON FUNCTION %s FROM anon, authenticated', r.sig);

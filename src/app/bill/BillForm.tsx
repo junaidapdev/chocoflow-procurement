@@ -48,6 +48,13 @@ export default function BillForm({ branches, loadError }: Props) {
   const [billDate, setBillDate] = useState('');
   const [amount, setAmount] = useState('');
 
+  // Held in state for the same reason `billDate` is: this page is
+  // force-dynamic, so the component renders on the server too. Calling
+  // riyadhToday() straight in the JSX would evaluate it once there and again
+  // during hydration, and a date rollover between the two renders is a
+  // hydration mismatch on the `max` attribute.
+  const [maxDate, setMaxDate] = useState('');
+
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [submitted, setSubmitted] = useState<Submitted | null>(null);
@@ -66,7 +73,9 @@ export default function BillForm({ branches, loadError }: Props) {
       // Private browsing or blocked storage — the form still works, it just
       // asks for the branch again next time.
     }
-    setBillDate(riyadhToday());
+    const today = riyadhToday();
+    setBillDate(today);
+    setMaxDate(today);
   }, []);
 
   const grouped = (['makkah', 'jeddah'] as IceCity[])
@@ -109,6 +118,8 @@ export default function BillForm({ branches, loadError }: Props) {
 
       setSubmitted(result.bill);
       setAmount('');
+      // Safe to read directly here: this runs from a click handler, long after
+      // hydration, so there is no server render to disagree with.
       setBillDate(riyadhToday());
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Something went wrong. Please try again.');
@@ -189,11 +200,12 @@ export default function BillForm({ branches, loadError }: Props) {
             )}
 
             <div className="space-y-2">
-              <label className="text-sm font-semibold text-gray-700 flex items-baseline gap-2">
+              <label htmlFor="bill-name" className="text-sm font-semibold text-gray-700 flex items-baseline gap-2">
                 {t.name}
                 <span className="text-xs font-normal text-gray-400">{t.nameHint}</span>
               </label>
               <input
+                id="bill-name"
                 value={name}
                 onChange={e => setName(e.target.value)}
                 maxLength={80}
@@ -203,8 +215,9 @@ export default function BillForm({ branches, loadError }: Props) {
             </div>
 
             <div className="space-y-2">
-              <label className="text-sm font-semibold text-gray-700 block">{t.branch}</label>
+              <label htmlFor="bill-branch" className="text-sm font-semibold text-gray-700 block">{t.branch}</label>
               <select
+                id="bill-branch"
                 value={branchId}
                 onChange={e => setBranchId(e.target.value)}
                 required
@@ -224,11 +237,12 @@ export default function BillForm({ branches, loadError }: Props) {
             </div>
 
             <div className="space-y-2">
-              <label className="text-sm font-semibold text-gray-700 block">{t.date}</label>
+              <label htmlFor="bill-date" className="text-sm font-semibold text-gray-700 block">{t.date}</label>
               <input
+                id="bill-date"
                 type="date"
                 value={billDate}
-                max={riyadhToday()}
+                max={maxDate || undefined}
                 onChange={e => setBillDate(e.target.value)}
                 required
                 className={inputClass}
@@ -237,12 +251,13 @@ export default function BillForm({ branches, loadError }: Props) {
             </div>
 
             <div className="space-y-2">
-              <label className="text-sm font-semibold text-gray-700 block">{t.amount}</label>
+              <label htmlFor="bill-amount" className="text-sm font-semibold text-gray-700 block">{t.amount}</label>
               <div className="relative">
                 <span className="absolute start-4 top-4 text-gray-400 font-medium text-sm">
                   {t.amountPrefix}
                 </span>
                 <input
+                  id="bill-amount"
                   type="number"
                   inputMode="decimal"
                   step="0.01"

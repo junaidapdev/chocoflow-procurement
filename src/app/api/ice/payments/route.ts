@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import { NextRequest, NextResponse } from 'next/server';
 import { getSupabaseAdminClient } from '@/lib/supabase-admin';
 import { logAuditEvent } from '@/lib/audit-log';
@@ -99,11 +100,20 @@ export async function POST(request: NextRequest) {
     }
 
     const extension = EXTENSION_BY_TYPE[receipt.type] || 'bin';
-    receiptPath = `${batch.city}/${batch.reference}.${extension}`;
+
+    // Unique per attempt, and never overwritten.
+    //
+    // A path derived only from the batch reference is shared by every attempt
+    // on that batch. Two overlapping submissions would then upsert over each
+    // other, and — worse — the loser's cleanup would delete the object the
+    // winner's ice_payments row points at, leaving a paid batch whose receipt
+    // link is broken. Since only this attempt can own this path, the cleanup
+    // below can only ever remove its own upload.
+    receiptPath = `${batch.city}/${batch.reference}-${randomUUID()}.${extension}`;
 
     const { error: uploadError } = await supabaseAdmin.storage
       .from(ICE_RECEIPT_BUCKET)
-      .upload(receiptPath, receipt, { contentType: receipt.type, upsert: true });
+      .upload(receiptPath, receipt, { contentType: receipt.type, upsert: false });
 
     if (uploadError) throw uploadError;
 

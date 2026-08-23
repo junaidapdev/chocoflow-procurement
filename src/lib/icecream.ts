@@ -41,6 +41,11 @@ export type IceBranch = {
   name_ar: string | null;
   city: IceCity;
   sort_order: number;
+  // Who covers this branch today. Used only to label a branch with no bills —
+  // a block that showed "Unassigned" for a quiet branch would read as a data
+  // problem rather than as a quiet week. Bills that exist always carry their
+  // own stored salesman instead, so this never rewrites history.
+  current_salesman_name?: string | null;
 };
 
 export type IceBill = {
@@ -137,45 +142,101 @@ export type IceSheet = {
  * bills this round. Those render as a zero block on purpose: a branch that is
  * simply absent is indistinguishable from one that was forgotten, and the
  * source sheets have always shown "TOTAL 0" for a quiet branch.
+ *
+ * Two invariants this function has to hold, because the manager reads its
+ * output and then approves a payment against it:
+ *
+ *  1. Every bill passed in appears somewhere. `branches` lists *active*
+ *     branches, but approval batches every pending bill regardless — so a bill
+ *     on a branch that was deactivated after it was filed would otherwise be
+ *     invisible here while still being paid, and the screenshot sent to
+ *     accounts would understate the total.
+ *  2. A block is one branch AND one salesman. Bills spanning a reassignment
+ *     split into two blocks, matching the source sheet's "BRANCH / SALES MAN"
+ *     header, rather than filing everything under whoever happened to be first.
  */
 export function buildSheet(
   city: IceCity,
   branches: IceBranch[],
   bills: IceBillRow[]
 ): IceSheet {
-  const byBranch = new Map<string, IceBillRow[]>();
+  const cityBranches = branches.filter(branch => branch.city === city);
+  const known = new Map(cityBranches.map(branch => [branch.id, branch]));
+
+  // Invariant 1: rescue bills whose branch is missing from `branches`. The row
+  // carries its own branch name, so the block can still be labelled correctly.
+  const orphans = new Map<string, IceBranch>();
   for (const bill of bills) {
-    const existing = byBranch.get(bill.branch_id);
-    if (existing) existing.push(bill);
-    else byBranch.set(bill.branch_id, [bill]);
+    if (known.has(bill.branch_id) || orphans.has(bill.branch_id)) continue;
+    orphans.set(bill.branch_id, {
+      id: bill.branch_id,
+      name_en: bill.branch_name || 'Unknown branch',
+      name_ar: null,
+      city,
+      // Sorted last: these are branches that should not normally be receiving
+      // deliveries, so they belong at the bottom where they get noticed.
+      sort_order: Number.MAX_SAFE_INTEGER,
+    });
   }
 
-  const blocks: IceSheetBranchBlock[] = branches
-    .filter(branch => branch.city === city)
-    .sort((a, b) => a.sort_order - b.sort_order || a.name_en.localeCompare(b.name_en))
-    .map(branch => {
-      const branchBills = (byBranch.get(branch.id) || []).sort((a, b) =>
-        a.bill_date.localeCompare(b.bill_date)
-      );
+  const allBranches = [...cityBranches, ...Array.from(orphans.values())].sort(
+    (a, b) => a.sort_order - b.sort_order || a.name_en.localeCompare(b.name_en)
+  );
 
-      return {
+  // Invariant 2: group by branch *and* salesman.
+  const byBranchSalesman = new Map<string, IceBillRow[]>();
+  for (const bill of bills) {
+    const key = `${bill.branch_id}|${bill.salesman_name || UNASSIGNED_SALESMAN}`;
+    const existing = byBranchSalesman.get(key);
+    if (existing) existing.push(bill);
+    else byBranchSalesman.set(key, [bill]);
+  }
+
+  const blocks: IceSheetBranchBlock[] = [];
+
+  for (const branch of allBranches) {
+    const groups = Array.from(byBranchSalesman.entries())
+      .filter(([key]) => key.startsWith(`${branch.id}|`))
+      .sort(([a], [b]) => a.localeCompare(b));
+
+    if (groups.length === 0) {
+      // A quiet branch still gets a block, labelled with whoever covers it now.
+      blocks.push({
         branchId: branch.id,
         branchName: branch.name_en,
         branchNameAr: branch.name_ar,
-        // Every bill in a branch carries the same salesman, resolved when it was
-        // submitted. Reading it off the first bill rather than the branch's
-        // current assignment is what keeps an old sheet showing who actually
-        // covered it at the time.
-        salesmanName: branchBills[0]?.salesman_name || UNASSIGNED_SALESMAN,
-        bills: branchBills,
-        total: sumAmounts(branchBills.map(b => b.amount)),
-      };
-    });
+        salesmanName: branch.current_salesman_name || UNASSIGNED_SALESMAN,
+        bills: [],
+        total: 0,
+      });
+      continue;
+    }
 
+    for (const [key, groupBills] of groups) {
+      blocks.push({
+        branchId: branch.id,
+        branchName: branch.name_en,
+        branchNameAr: branch.name_ar,
+        salesmanName: key.slice(branch.id.length + 1),
+        bills: groupBills.slice().sort((a, b) => a.bill_date.localeCompare(b.bill_date)),
+        total: sumAmounts(groupBills.map(b => b.amount)),
+      });
+    }
+  }
+
+  return { city, ...totalsFor(blocks, bills) };
+}
+
+// Derives the summary, grand total and period from a set of blocks. Split out
+// so that hiding empty branches in the UI recomputes the summary from the same
+// blocks, instead of leaving the two halves of the sheet disagreeing.
+function totalsFor(
+  blocks: IceSheetBranchBlock[],
+  bills: IceBillRow[]
+): Omit<IceSheet, 'city'> {
   const dates = bills.map(b => b.bill_date).sort();
 
   return {
-    city,
     blocks,
     summary: blocks.map(block => ({
       salesmanName: block.salesmanName,
@@ -189,27 +250,58 @@ export function buildSheet(
 }
 
 /**
- * Flags bills that look like the same bill entered twice — same branch, same
- * day, same amount. Returns the set of ids involved so the review table can
- * mark every member of a duplicate group.
+ * Re-derives a sheet from a subset of its blocks, keeping the summary and grand
+ * total consistent with what is actually shown. Used by "hide empty branches":
+ * dropping a block from the table but leaving it in the side summary would put
+ * a row in the screenshot that the sheet above it does not explain.
+ */
+export function sheetFromBlocks(sheet: IceSheet, blocks: IceSheetBranchBlock[]): IceSheet {
+  return {
+    city: sheet.city,
+    ...totalsFor(blocks, blocks.flatMap(block => block.bills)),
+  };
+}
+
+const dupeKey = (bill: { branch_id: string; bill_date: string; amount: number }) =>
+  `${bill.branch_id}|${bill.bill_date}|${toHalalas(bill.amount)}`;
+
+/**
+ * Flags pending bills that look like the same bill recorded twice — same
+ * branch, same day, same amount. Returns the ids to mark in the review table.
+ *
+ * `alreadyBatched` carries bills that are already in a batch or paid. Checking
+ * against those matters more than checking pending-against-pending: the
+ * dangerous case is a store manager re-filing a bill that was already settled
+ * (often an urgent payment made mid-week, which the branch cannot see), because
+ * the earlier copy is no longer on screen for the manager to notice. Without
+ * this, that bill gets approved and paid a second time — the exact outcome the
+ * batching rules exist to prevent.
  *
  * Never blocks a submission. Two genuine deliveries to one branch on one day
  * for an identical amount are uncommon but real, and only the manager can tell
  * the difference.
  */
-export function findDuplicateBillIds(bills: IceBillRow[]): Set<string> {
-  const groups = new Map<string, string[]>();
+export function findDuplicateBillIds(
+  pending: IceBillRow[],
+  alreadyBatched: { branch_id: string; bill_date: string; amount: number }[] = []
+): Set<string> {
+  const settled = new Set(alreadyBatched.map(dupeKey));
 
-  for (const bill of bills) {
-    const key = `${bill.branch_id}|${bill.bill_date}|${toHalalas(bill.amount)}`;
+  const groups = new Map<string, string[]>();
+  for (const bill of pending) {
+    const key = dupeKey(bill);
     const existing = groups.get(key);
     if (existing) existing.push(bill.id);
     else groups.set(key, [bill.id]);
   }
 
   const flagged = new Set<string>();
-  Array.from(groups.values()).forEach(ids => {
-    if (ids.length > 1) ids.forEach((id: string) => flagged.add(id));
+  Array.from(groups.entries()).forEach(([key, ids]) => {
+    // Either two pending copies of each other, or one pending copy of something
+    // that has already been paid.
+    if (ids.length > 1 || settled.has(key)) {
+      ids.forEach((id: string) => flagged.add(id));
+    }
   });
 
   return flagged;

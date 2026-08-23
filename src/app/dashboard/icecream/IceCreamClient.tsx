@@ -11,7 +11,8 @@ import { formatPaymentDate, riyadhToday } from '@/lib/dates';
 import { openSecureDocument } from '@/lib/storage';
 import {
   ICE_CITIES, ICE_CITY_LABELS, ICE_RECEIPT_BUCKET, buildSheet, findDuplicateBillIds,
-  formatAmount, type IceBatch, type IceBillRow, type IceBranch, type IceCity,
+  formatAmount, sheetFromBlocks,
+  type IceBatch, type IceBillRow, type IceBranch, type IceCity, type IceSheet,
 } from '@/lib/icecream';
 
 type PaidBatch = IceBatch & {
@@ -20,16 +21,19 @@ type PaidBatch = IceBatch & {
   receipt_path: string | null;
 };
 
+export type SettledBill = { branch_id: string; bill_date: string; amount: number };
+
 type Props = {
   branches: IceBranch[];
   pendingBills: IceBillRow[];
+  settledBills: SettledBill[];
   openBatches: IceBatch[];
   paidBatches: PaidBatch[];
   loadError: boolean;
 };
 
 export default function IceCreamClient({
-  branches, pendingBills, openBatches, paidBatches, loadError,
+  branches, pendingBills, settledBills, openBatches, paidBatches, loadError,
 }: Props) {
   const router = useRouter();
 
@@ -51,9 +55,18 @@ export default function IceCreamClient({
     [city, branches, cityBills]
   );
 
-  const duplicateIds = useMemo(() => findDuplicateBillIds(cityBills), [cityBills]);
+  const duplicateIds = useMemo(
+    () => findDuplicateBillIds(cityBills, settledBills),
+    [cityBills, settledBills]
+  );
 
-  const visibleBlocks = hideEmpty ? sheet.blocks.filter(b => b.bills.length > 0) : sheet.blocks;
+  // Rebuilt rather than just filtered: the summary and grand total have to come
+  // from the same blocks the table shows, or the screenshot carries a summary
+  // row for a branch that has no block above it.
+  const visibleSheet = useMemo(
+    () => (hideEmpty ? sheetFromBlocks(sheet, sheet.blocks.filter(b => b.bills.length > 0)) : sheet),
+    [sheet, hideEmpty]
+  );
 
   const cityOpenBatches = openBatches.filter(b => b.city === city);
   const cityPaidBatches = paidBatches.filter(b => b.city === city);
@@ -125,7 +138,7 @@ export default function IceCreamClient({
           <X className="w-5 h-5" />
         </button>
         <div className="p-6 max-w-3xl mx-auto">
-          <SheetTable sheet={{ ...sheet, blocks: visibleBlocks }} compact />
+          <SheetTable sheet={visibleSheet} compact />
         </div>
       </div>
     );
@@ -257,9 +270,14 @@ export default function IceCreamClient({
 
         <div className="flex-1" />
 
+        {/* Blocked while anything failed to load. Approval batches every
+            pending bill in the city, but a failed branch or history read means
+            the sheet on screen may not show all of them — so the manager would
+            be approving a total they were never shown. */}
         <button
           onClick={approveWeek}
-          disabled={cityBills.length === 0 || busy === 'approve'}
+          disabled={cityBills.length === 0 || busy === 'approve' || loadError}
+          title={loadError ? 'Refresh the page before approving — some data failed to load' : undefined}
           className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-bold disabled:opacity-50"
         >
           {busy === 'approve' ? (
@@ -279,7 +297,13 @@ export default function IceCreamClient({
       )}
 
       {showAddForm && (
+        // Keyed on the city so switching tabs remounts it. Without that, the
+        // form keeps the branch selected under the previous city — the dropdown
+        // shows blank because the id is no longer among its options, but the
+        // stale id is still what gets submitted, filing the bill against the
+        // city the manager just navigated away from.
         <AddBillForm
+          key={city}
           branches={branches.filter(b => b.city === city)}
           onClose={() => setShowAddForm(false)}
           onSaved={() => {
@@ -296,7 +320,7 @@ export default function IceCreamClient({
           </p>
         ) : (
           <SheetTable
-            sheet={{ ...sheet, blocks: visibleBlocks }}
+            sheet={visibleSheet}
             duplicateIds={duplicateIds}
             onDelete={deleteBill}
             onPayNow={payNow}
@@ -366,7 +390,7 @@ export default function IceCreamClient({
 function SheetTable({
   sheet, duplicateIds, onDelete, onPayNow, busy, compact,
 }: {
-  sheet: ReturnType<typeof buildSheet>;
+  sheet: IceSheet;
   duplicateIds?: Set<string>;
   onDelete?: (id: string) => void;
   onPayNow?: (id: string) => void;
@@ -391,7 +415,12 @@ function SheetTable({
       <div className={compact ? 'grid gap-6 sm:grid-cols-[1fr_auto]' : 'space-y-5'}>
         <div className="space-y-5">
           {sheet.blocks.map(block => (
-            <div key={block.branchId} className="border border-gray-200 rounded-xl overflow-hidden">
+            // A branch whose bills span a salesman reassignment produces one
+            // block per salesman, so the branch id alone is no longer unique.
+            <div
+              key={`${block.branchId}|${block.salesmanName}`}
+              className="border border-gray-200 rounded-xl overflow-hidden"
+            >
               <div className="bg-gray-900 text-white px-4 py-2.5 flex flex-wrap items-baseline gap-x-3">
                 <span className="font-black uppercase tracking-wide text-sm">
                   {block.branchName}

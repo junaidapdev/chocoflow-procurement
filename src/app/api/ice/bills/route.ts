@@ -78,10 +78,18 @@ function hasSessionCookie(request: NextRequest): boolean {
   return request.cookies.getAll().some(cookie => cookie.name.startsWith('sb-'));
 }
 
+// A JSON body is not a form: it can carry any type. `Number(true)` is 1 and
+// `Number([5])` is 5, so coercing whatever arrives would accept `true` as a
+// one-riyal bill. Only the two types a real client sends are considered.
 function parseAmount(value: unknown): { amount: number } | { error: string } {
-  const amount = typeof value === 'number' ? value : Number(value);
+  if (typeof value !== 'number' && typeof value !== 'string') {
+    return { error: 'Please enter the bill amount.' };
+  }
 
-  if (!Number.isFinite(amount)) {
+  const text = typeof value === 'number' ? String(value) : value.trim();
+  const amount = Number(text);
+
+  if (text === '' || !Number.isFinite(amount)) {
     return { error: 'Please enter the bill amount.' };
   }
 
@@ -93,20 +101,43 @@ function parseAmount(value: unknown): { amount: number } | { error: string } {
     return { error: 'That amount looks too large — please check it.' };
   }
 
-  // numeric(12,2) would round a third decimal silently. Rounding here means the
-  // number stored is the number the API validated.
-  return { amount: Math.round(amount * 100) / 100 };
+  // Rejected rather than rounded. `Math.round(1.005 * 100) / 100` is 1.00,
+  // because 1.005 is not exactly representable in binary floating point — but
+  // numeric(12,2) rounds the same input to 1.01. Silently storing a different
+  // figure from the one Postgres would have stored is worse than refusing an
+  // input no real bill has, and money should never be quietly re-rounded.
+  const decimals = text.includes('e') || text.includes('E')
+    ? Number.MAX_SAFE_INTEGER // exponent notation — not something to guess at
+    : (text.split('.')[1]?.length ?? 0);
+
+  if (decimals > 2) {
+    return { error: 'Amounts can have at most two decimal places.' };
+  }
+
+  return { amount };
+}
+
+// JSON.parse accepts `null`, `[]` and bare scalars, none of which have the
+// fields this endpoint reads. Destructuring them throws a TypeError outside the
+// parse try/catch, which surfaces as an unhandled 500 rather than a 400.
+function isJsonObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 export async function POST(request: NextRequest) {
-  let body: Record<string, unknown>;
+  let parsedBody: unknown;
 
   try {
-    body = await request.json();
+    parsedBody = await request.json();
   } catch {
     return NextResponse.json({ error: 'Invalid request.' }, { status: 400 });
   }
 
+  if (!isJsonObject(parsedBody)) {
+    return NextResponse.json({ error: 'Invalid request.' }, { status: 400 });
+  }
+
+  const body = parsedBody;
   const branchId = body.branch_id;
   const submittedByRaw = body.submitted_by_name;
 
@@ -140,40 +171,46 @@ export async function POST(request: NextRequest) {
   try {
     const supabaseAdmin = getSupabaseAdminClient();
 
-    // Resolve the branch and its current salesman in one go. An unknown or
-    // retired branch id fails here rather than creating an orphan bill.
+    // Read for the response and the audit entry. Whether the branch is usable
+    // is decided inside ice_submit_bill, under the same lock as the insert, so
+    // this is presentation only and cannot be raced into a wrong decision.
     const { data: branch, error: branchError } = await supabaseAdmin
       .from('ice_branches')
-      .select('id, name_en, city, active')
+      .select('id, name_en, city')
       .eq('id', branchId)
       .maybeSingle();
 
     if (branchError) throw branchError;
 
-    if (!branch || !branch.active) {
-      return NextResponse.json({ error: 'That branch is not available.' }, { status: 400 });
-    }
+    // Validation, the daily cap, salesman resolution and the insert all happen
+    // in one transaction. Counting here and inserting afterwards would let
+    // concurrent submissions all pass the check before any of them committed,
+    // which is to say the cap would not be a cap.
+    //
+    // A null cap skips the check: that is the signed-in manager entering a
+    // backlog by hand, exactly the case the cap must not block.
+    const { data: billId, error: submitError } = await supabaseAdmin.rpc('ice_submit_bill', {
+      p_branch_id: branchId,
+      p_bill_date: billDate,
+      p_amount: parsed.amount,
+      p_submitted_by: submittedBy,
+      p_source: isManual ? 'manual' : 'link',
+      p_daily_cap: isManual ? null : MAX_BILLS_PER_BRANCH_PER_DAY,
+    });
 
-    // The cap exists to bound what a leaked public link can do overnight. A
-    // signed-in manager clearing a genuine backlog is exactly the case it must
-    // not block, so it applies to the public path only.
-    if (!isManual) {
-      const { count: todayCount, error: countError } = await supabaseAdmin
-        .from('ice_bills')
-        .select('id', { count: 'exact', head: true })
-        .eq('branch_id', branchId)
-        .gte('created_at', `${riyadhToday()}T00:00:00Z`);
+    if (submitError) {
+      if (submitError.message.includes('branch_unavailable')) {
+        return NextResponse.json({ error: 'That branch is not available.' }, { status: 400 });
+      }
 
-      if (countError) throw countError;
-
-      if ((todayCount ?? 0) >= MAX_BILLS_PER_BRANCH_PER_DAY) {
+      if (submitError.message.includes('daily_cap_reached')) {
         await logAuditEvent({
           action: 'ice.bill.rate_limited',
           entityType: 'ice_bill',
-          entityLabel: branch.name_en,
+          entityLabel: branch?.name_en,
           actor: { type: 'public' },
           outcome: 'denied',
-          metadata: { branch: branch.name_en, submitted_by: submittedBy },
+          metadata: { branch: branch?.name_en, submitted_by: submittedBy },
           request,
         });
 
@@ -182,45 +219,19 @@ export async function POST(request: NextRequest) {
           { status: 429 }
         );
       }
+
+      throw submitError;
     }
-
-    // The salesman covering this branch right now. Stored on the bill rather
-    // than looked up when the sheet renders, so reassigning a salesman later
-    // never rewrites which sheets they appeared on.
-    const { data: assignment, error: assignmentError } = await supabaseAdmin
-      .from('ice_branch_salesmen')
-      .select('salesman_id')
-      .eq('branch_id', branchId)
-      .is('effective_to', null)
-      .maybeSingle();
-
-    if (assignmentError) throw assignmentError;
-
-    const { data: inserted, error: insertError } = await supabaseAdmin
-      .from('ice_bills')
-      .insert({
-        branch_id: branchId,
-        salesman_id: assignment?.salesman_id ?? null,
-        bill_date: billDate,
-        amount: parsed.amount,
-        status: 'pending',
-        source: isManual ? 'manual' : 'link',
-        submitted_by_name: submittedBy,
-      })
-      .select('id')
-      .single();
-
-    if (insertError) throw insertError;
 
     await logAuditEvent({
       action: isManual ? 'ice.bill.added_manually' : 'ice.bill.submitted',
       entityType: 'ice_bill',
-      entityId: inserted.id,
-      entityLabel: `${branch.name_en} · ${billDate}`,
+      entityId: billId as string,
+      entityLabel: `${branch?.name_en ?? 'Unknown branch'} · ${billDate}`,
       actor: auth?.ok ? auth.actor : { type: 'public', name: submittedBy },
       afterState: {
-        branch: branch.name_en,
-        city: branch.city,
+        branch: branch?.name_en,
+        city: branch?.city,
         bill_date: billDate,
         amount: parsed.amount,
       },
@@ -230,8 +241,8 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       ok: true,
       bill: {
-        id: inserted.id,
-        branch_name: branch.name_en,
+        id: billId,
+        branch_name: branch?.name_en ?? 'Branch',
         bill_date: billDate,
         amount: parsed.amount,
       },

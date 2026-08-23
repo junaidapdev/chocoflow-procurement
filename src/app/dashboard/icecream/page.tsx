@@ -1,7 +1,7 @@
 import { createClient } from '@/lib/supabase-server';
 import { redirect } from 'next/navigation';
 import type { IceBatch, IceBillRow, IceBranch } from '@/lib/icecream';
-import IceCreamClient from './IceCreamClient';
+import IceCreamClient, { type SettledBill } from './IceCreamClient';
 
 // Reads with the signed-in user's session rather than the service role, so the
 // "Ice members can read" RLS policies are doing real work here — a signed-in
@@ -20,11 +20,20 @@ export default async function IceCreamPage() {
     redirect('/login');
   }
 
-  const [branchesResult, pendingResult, openBatchesResult, paidBatchesResult] = await Promise.all([
+  const [
+    branchesResult,
+    pendingResult,
+    openBatchesResult,
+    paidBatchesResult,
+    settledResult,
+  ] = await Promise.all([
+    // Current salesman comes along so a branch with no bills can still be
+    // labelled with whoever covers it, rather than "Unassigned".
     supabase
       .from('ice_branches')
-      .select('id, name_en, name_ar, city, sort_order')
+      .select('id, name_en, name_ar, city, sort_order, ice_branch_salesmen(effective_to, ice_salesmen(name))')
       .eq('active', true)
+      .is('ice_branch_salesmen.effective_to', null)
       .order('sort_order', { ascending: true }),
 
     // Everything not yet in a batch, regardless of how old. A bill submitted
@@ -53,9 +62,33 @@ export default async function IceCreamPage() {
       .eq('status', 'paid')
       .order('approved_at', { ascending: false })
       .limit(12),
+
+    // Bills that are already batched or paid, for duplicate detection. Checking
+    // a new bill only against other *pending* ones misses the case that
+    // actually costs money: a branch re-filing a bill that was already settled
+    // — often an urgent mid-week payment the branch never saw — where the
+    // earlier copy is no longer on screen for anyone to notice.
+    supabase
+      .from('ice_bills')
+      .select('branch_id, bill_date, amount')
+      .in('status', ['batched', 'paid'])
+      .gte('bill_date', historyCutoff()),
   ]);
 
-  const branches = (branchesResult.data || []) as IceBranch[];
+  const branches: IceBranch[] = (branchesResult.data || []).map((branch: Record<string, any>) => {
+    const assignments = Array.isArray(branch.ice_branch_salesmen)
+      ? branch.ice_branch_salesmen
+      : [branch.ice_branch_salesmen];
+
+    return {
+      id: branch.id,
+      name_en: branch.name_en,
+      name_ar: branch.name_ar,
+      city: branch.city,
+      sort_order: branch.sort_order,
+      current_salesman_name: assignments[0]?.ice_salesmen?.name ?? null,
+    };
+  });
 
   const pendingBills: IceBillRow[] = (pendingResult.data || []).map((bill: Record<string, any>) => ({
     ...(bill as IceBillRow),
@@ -80,16 +113,34 @@ export default async function IceCreamPage() {
     };
   });
 
+  // Every query counts. A failed branch read leaves the sheet showing bills
+  // under no branch; a failed paid-batch read hides settled work; a failed
+  // history read silently disables duplicate detection. Any of those makes the
+  // total on screen untrustworthy, and the manager approves against that total.
   const loadError =
-    !!branchesResult.error || !!pendingResult.error || !!openBatchesResult.error;
+    !!branchesResult.error ||
+    !!pendingResult.error ||
+    !!openBatchesResult.error ||
+    !!paidBatchesResult.error ||
+    !!settledResult.error;
 
   return (
     <IceCreamClient
       branches={branches}
       pendingBills={pendingBills}
+      settledBills={(settledResult.data || []) as SettledBill[]}
       openBatches={(openBatchesResult.data || []) as IceBatch[]}
       paidBatches={paidBatches}
       loadError={loadError}
     />
   );
+}
+
+// How far back to look for an already-settled copy of a bill. Long enough to
+// cover a branch re-filing something from a previous cycle, short enough that
+// two unrelated deliveries of the same amount a year apart don't get flagged.
+function historyCutoff(): string {
+  const cutoff = new Date();
+  cutoff.setUTCDate(cutoff.getUTCDate() - 120);
+  return cutoff.toISOString().slice(0, 10);
 }
