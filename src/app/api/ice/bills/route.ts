@@ -1,8 +1,10 @@
+import { randomUUID } from 'crypto';
 import { NextRequest, NextResponse } from 'next/server';
 import { getSupabaseAdminClient } from '@/lib/supabase-admin';
 import { logAuditEvent } from '@/lib/audit-log';
 import { requireIceMember } from '@/lib/ice-auth';
 import { EARLIEST_PAYMENT_DATE, isValidDateString, riyadhToday } from '@/lib/dates';
+import { ICE_BILL_BUCKET } from '@/lib/icecream';
 import { isUuid } from '@/lib/uuid';
 
 // Bills submitted from the public /bill link.
@@ -34,6 +36,28 @@ const MAX_BILLS_PER_BRANCH_PER_DAY = 20;
 // source sheets was 3,258.82; a five-figure ice cream delivery to a single
 // branch would be unprecedented and is worth stopping to check.
 const MAX_BILL_AMOUNT = 100000;
+
+// The bill photo is optional (see the migration for why), but when one is sent
+// it is a phone photo of a paper bill — the same shape as the payment receipt,
+// so the same limits apply.
+const MAX_BILL_PHOTO_SIZE = 10 * 1024 * 1024; // 10MB
+const ACCEPTED_PHOTO_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'application/pdf'];
+
+// A ceiling on the whole request body, checked from Content-Length before the
+// body is read. request.formData() buffers the entire multipart payload into
+// memory, so the 10MB photo check alone is too late — a leaked link could post
+// a multi-gigabyte body and exhaust memory before that check ever runs. The
+// photo limit plus a megabyte of headroom for the text fields and multipart
+// framing is the most this endpoint ever has a reason to accept.
+const MAX_REQUEST_BYTES = MAX_BILL_PHOTO_SIZE + 1024 * 1024;
+
+const EXTENSION_BY_TYPE: Record<string, string> = {
+  'image/jpeg': 'jpg',
+  'image/png': 'png',
+  'image/webp': 'webp',
+  'image/heic': 'heic',
+  'application/pdf': 'pdf',
+};
 
 function daysBetween(from: string, to: string): number {
   const [fy, fm, fd] = from.split('-').map(Number);
@@ -117,29 +141,44 @@ function parseAmount(value: unknown): { amount: number } | { error: string } {
   return { amount };
 }
 
-// JSON.parse accepts `null`, `[]` and bare scalars, none of which have the
-// fields this endpoint reads. Destructuring them throws a TypeError outside the
-// parse try/catch, which surfaces as an unhandled 500 rather than a 400.
-function isJsonObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
+// Best-effort removal of an uploaded photo whose bill never committed. Awaited
+// but never allowed to throw: a failed cleanup must not turn a handled 4xx into
+// an unhandled 500, and the worst case is one orphaned object, not a data error.
+async function cleanupPhoto(
+  supabaseAdmin: ReturnType<typeof getSupabaseAdminClient>,
+  photoPath: string | null
+): Promise<void> {
+  if (!photoPath) return;
+  await supabaseAdmin.storage.from(ICE_BILL_BUCKET).remove([photoPath]).catch(() => undefined);
 }
 
 export async function POST(request: NextRequest) {
-  let parsedBody: unknown;
+  // Reject an over-large body at the door, before request.formData() buffers it
+  // into memory. Content-Length can be absent or lied about, so this is a cheap
+  // first gate rather than the only guard — the per-field photo size is still
+  // checked once the body is parsed — but it stops the naive memory-exhaustion
+  // attack a public multipart endpoint would otherwise be wide open to.
+  const contentLength = Number(request.headers.get('content-length'));
+  if (Number.isFinite(contentLength) && contentLength > MAX_REQUEST_BYTES) {
+    return NextResponse.json({ error: 'That upload is too large.' }, { status: 413 });
+  }
+
+  // The form carries a file now, so the body is multipart rather than JSON. The
+  // manual "Add a bill" form in the dashboard posts the same shape, just without
+  // a photo.
+  let form: FormData;
 
   try {
-    parsedBody = await request.json();
+    form = await request.formData();
   } catch {
     return NextResponse.json({ error: 'Invalid request.' }, { status: 400 });
   }
 
-  if (!isJsonObject(parsedBody)) {
-    return NextResponse.json({ error: 'Invalid request.' }, { status: 400 });
-  }
-
-  const body = parsedBody;
-  const branchId = body.branch_id;
-  const submittedByRaw = body.submitted_by_name;
+  const branchId = form.get('branch_id');
+  const billDateRaw = form.get('bill_date');
+  const amountRaw = form.get('amount');
+  const submittedByRaw = form.get('submitted_by_name');
+  const photoRaw = form.get('bill_photo');
 
   // The same endpoint serves the public link and the manager adding a bill that
   // only ever appeared in WhatsApp. Authorization decides which: a valid ice
@@ -152,24 +191,44 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Please select a branch.' }, { status: 400 });
   }
 
-  const dateError = validateBillDate(body.bill_date, isManual);
+  const dateError = validateBillDate(billDateRaw, isManual);
   if (dateError) {
     return NextResponse.json({ error: dateError }, { status: 400 });
   }
 
-  const parsed = parseAmount(body.amount);
+  const parsed = parseAmount(amountRaw);
   if ('error' in parsed) {
     return NextResponse.json({ error: parsed.error }, { status: 400 });
   }
 
-  const billDate = body.bill_date as string;
+  // An empty file input still arrives as a File with size 0, which is not a
+  // photo — treat it as "none". A real photo is validated here, before it
+  // touches storage, so an oversized or wrong-typed file is turned away at the
+  // door rather than after an upload.
+  const photo = photoRaw instanceof File && photoRaw.size > 0 ? photoRaw : null;
+  if (photo) {
+    if (photo.size > MAX_BILL_PHOTO_SIZE) {
+      return NextResponse.json({ error: 'The photo must be under 10MB.' }, { status: 400 });
+    }
+    if (!ACCEPTED_PHOTO_TYPES.includes(photo.type)) {
+      return NextResponse.json({ error: 'The photo must be an image or a PDF.' }, { status: 400 });
+    }
+  }
+
+  const billDate = billDateRaw as string;
   const submittedBy =
     typeof submittedByRaw === 'string' && submittedByRaw.trim()
       ? submittedByRaw.trim().slice(0, 80)
       : null;
 
+  let supabaseAdmin: ReturnType<typeof getSupabaseAdminClient> | null = null;
+  let photoPath: string | null = null;
+
   try {
-    const supabaseAdmin = getSupabaseAdminClient();
+    // Created inside the try so a missing-configuration throw surfaces as this
+    // route's controlled 500 with an audit entry, rather than an unhandled
+    // error that escapes before either can run.
+    supabaseAdmin = getSupabaseAdminClient();
 
     // Read for the response and the audit entry. Whether the branch is usable
     // is decided inside ice_submit_bill, under the same lock as the insert, so
@@ -181,6 +240,62 @@ export async function POST(request: NextRequest) {
       .maybeSingle();
 
     if (branchError) throw branchError;
+
+    // Stop a leaked link from churning storage on a branch that has already hit
+    // its cap: count the day's bills and reject BEFORE uploading, so a spammer
+    // over the limit never gets a file written and instantly deleted. The RPC's
+    // advisory-locked count is still the authoritative gate — this is a cheap
+    // pre-filter, not a replacement — so a race that slips past here is caught
+    // there and cleaned up on the daily_cap_reached path below.
+    if (!isManual) {
+      // Start of the current Riyadh day as a UTC instant. The RPC counts by the
+      // Riyadh calendar day (the business runs in UTC+3); this boundary is built
+      // the same way so the two agree rather than splitting on server-local
+      // midnight.
+      const riyadhDayStart = new Date(`${riyadhToday()}T00:00:00+03:00`).toISOString();
+
+      const { count, error: countError } = await supabaseAdmin
+        .from('ice_bills')
+        .select('id', { count: 'exact', head: true })
+        .eq('branch_id', branchId as string)
+        .gte('created_at', riyadhDayStart);
+
+      // A failed count must not open the gate. Fall through to the RPC, which
+      // enforces the cap under its lock regardless — a rare extra upload beats a
+      // pre-filter that fails open into unlimited churn.
+      if (!countError && (count ?? 0) >= MAX_BILLS_PER_BRANCH_PER_DAY) {
+        await logAuditEvent({
+          action: 'ice.bill.rate_limited',
+          entityType: 'ice_bill',
+          entityLabel: branch?.name_en,
+          actor: { type: 'public' },
+          outcome: 'denied',
+          metadata: { branch: branch?.name_en, submitted_by: submittedBy, stage: 'pre_upload' },
+          request,
+        });
+
+        return NextResponse.json(
+          { error: 'Too many bills filed for this branch today. Please contact the office.' },
+          { status: 429 }
+        );
+      }
+    }
+
+    // Upload the photo before the insert so its path lands on the row in the
+    // same transaction. If the insert is then rejected — a hit cap, an
+    // unavailable branch, any error — the object is removed on that path and in
+    // the catch, so a rejected submission never leaves a stray file behind and
+    // a leaked link cannot accumulate uploads by spamming a capped branch.
+    if (photo) {
+      const extension = EXTENSION_BY_TYPE[photo.type] || 'bin';
+      photoPath = `${branch?.city ?? 'unknown'}/${randomUUID()}.${extension}`;
+
+      const { error: uploadError } = await supabaseAdmin.storage
+        .from(ICE_BILL_BUCKET)
+        .upload(photoPath, photo, { contentType: photo.type, upsert: false });
+
+      if (uploadError) throw uploadError;
+    }
 
     // Validation, the daily cap, salesman resolution and the insert all happen
     // in one transaction. Counting here and inserting afterwards would let
@@ -196,9 +311,14 @@ export async function POST(request: NextRequest) {
       p_submitted_by: submittedBy,
       p_source: isManual ? 'manual' : 'link',
       p_daily_cap: isManual ? null : MAX_BILLS_PER_BRANCH_PER_DAY,
+      p_photo_path: photoPath,
     });
 
     if (submitError) {
+      // No bill was created, so the photo it would have pointed at is orphaned.
+      await cleanupPhoto(supabaseAdmin, photoPath);
+      photoPath = null;
+
       if (submitError.message.includes('branch_unavailable')) {
         return NextResponse.json({ error: 'That branch is not available.' }, { status: 400 });
       }
@@ -250,6 +370,11 @@ export async function POST(request: NextRequest) {
   } catch (err) {
     console.error('Ice bill submission failed:', err);
 
+    // The upload is not transactional, so anything thrown after it has to undo
+    // it by hand — otherwise a failed submission leaves a file with no row. If
+    // the throw was the client init itself, there is nothing uploaded to undo.
+    if (supabaseAdmin) await cleanupPhoto(supabaseAdmin, photoPath);
+
     await logAuditEvent({
       action: isManual ? 'ice.bill.added_manually' : 'ice.bill.submitted',
       entityType: 'ice_bill',
@@ -292,7 +417,7 @@ export async function DELETE(request: NextRequest) {
       .delete()
       .eq('id', billId)
       .eq('status', 'pending')
-      .select('id, branch_id, bill_date, amount')
+      .select('id, branch_id, bill_date, amount, bill_photo_path')
       .maybeSingle();
 
     if (error) throw error;
@@ -303,6 +428,11 @@ export async function DELETE(request: NextRequest) {
         { status: 409 }
       );
     }
+
+    // The row is gone, so its photo is now unreachable — remove it too rather
+    // than leave an orphan in the bucket. Best-effort: the bill is already
+    // deleted, and a lingering object is not worth failing the request over.
+    await cleanupPhoto(supabaseAdmin, removed.bill_photo_path);
 
     await logAuditEvent({
       action: 'ice.bill.deleted',

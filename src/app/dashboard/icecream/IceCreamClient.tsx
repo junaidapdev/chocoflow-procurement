@@ -3,15 +3,15 @@
 import { useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
-  AlertCircle, AlertTriangle, Camera, Check, CheckCircle2, Loader2, Plus,
+  AlertCircle, AlertTriangle, Camera, Check, CheckCircle2, ImageIcon, Loader2, Plus,
   Receipt, Send, Trash2, X, Zap,
 } from 'lucide-react';
 import { BANK_ACCOUNTS, getBankAccountLabel } from '@/lib/constants';
 import { formatPaymentDate, riyadhToday } from '@/lib/dates';
 import { openSecureDocument } from '@/lib/storage';
 import {
-  ICE_CITIES, ICE_CITY_LABELS, ICE_RECEIPT_BUCKET, buildSheet, findDuplicateBillIds,
-  formatAmount, sheetFromBlocks,
+  ICE_BILL_BUCKET, ICE_CITIES, ICE_CITY_LABELS, ICE_RECEIPT_BUCKET, buildSheet,
+  findDuplicateBillIds, formatAmount, sheetFromBlocks,
   type IceBatch, type IceBillRow, type IceBranch, type IceCity, type IceSheet,
 } from '@/lib/icecream';
 
@@ -478,6 +478,19 @@ function SheetTable({
                               <title>Same branch, date and amount as another bill</title>
                             </AlertTriangle>
                           )}
+                          {/* Only in the interactive view — the screenshot sent
+                              to accounts stays clean. Opens the branch's photo
+                              via a short-lived signed URL, like the receipt. */}
+                          {interactive && bill.bill_photo_path && (
+                            <button
+                              type="button"
+                              onClick={() => openSecureDocument(bill.bill_photo_path!, ICE_BILL_BUCKET)}
+                              title="View the bill photo"
+                              className="rounded p-0.5 text-gray-300 transition-colors hover:text-emerald-600"
+                            >
+                              <ImageIcon className="h-3.5 w-3.5" />
+                            </button>
+                          )}
                         </span>
 
                         <span className="flex items-center gap-1">
@@ -586,6 +599,7 @@ function AddBillForm({
   const [branchId, setBranchId] = useState('');
   const [billDate, setBillDate] = useState(riyadhToday());
   const [amount, setAmount] = useState('');
+  const [photo, setPhoto] = useState<File | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -595,11 +609,15 @@ function AddBillForm({
     setError(null);
 
     try {
-      const res = await fetch('/api/ice/bills', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ branch_id: branchId, bill_date: billDate, amount }),
-      });
+      // Multipart to match the endpoint. The office rarely has a photo for a
+      // bill it is typing in from WhatsApp, so it is only appended when present.
+      const form = new FormData();
+      form.append('branch_id', branchId);
+      form.append('bill_date', billDate);
+      form.append('amount', amount);
+      if (photo) form.append('bill_photo', photo);
+
+      const res = await fetch('/api/ice/bills', { method: 'POST', body: form });
       const result = await res.json();
       if (!res.ok) throw new Error(result.error || 'Could not add the bill.');
       onSaved();
@@ -662,7 +680,22 @@ function AddBillForm({
         />
       </div>
 
-      <div className="flex gap-2">
+      <div className="sm:col-span-4 space-y-1.5">
+        <label className="text-xs font-bold text-gray-600 uppercase tracking-wider">
+          Bill photo <span className="font-medium normal-case tracking-normal text-gray-400">— optional</span>
+        </label>
+        <input
+          type="file"
+          // The exact types /api/ice/bills accepts — not image/*, which would
+          // offer GIF/SVG the endpoint rejects, letting someone pick a file the
+          // form cannot submit.
+          accept="image/jpeg,image/png,image/webp,image/heic,application/pdf"
+          onChange={e => setPhoto(e.target.files?.[0] ?? null)}
+          className="w-full text-sm text-gray-600 file:mr-3 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-bold file:bg-gray-100 file:text-gray-700 hover:file:bg-gray-200"
+        />
+      </div>
+
+      <div className="flex gap-2 sm:col-span-4">
         <button
           type="submit"
           disabled={saving}

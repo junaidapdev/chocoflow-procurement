@@ -1,7 +1,7 @@
 'use client';
 
-import { useState, useEffect } from 'react';
-import { CheckCircle2, Loader2, AlertCircle, IceCream } from 'lucide-react';
+import { useState, useEffect, useRef } from 'react';
+import { CheckCircle2, Loader2, AlertCircle, IceCream, Camera, X } from 'lucide-react';
 import { ICE_CITY_LABELS, formatAmount, type IceBranch, type IceCity } from '@/lib/icecream';
 import { riyadhToday, formatPaymentDate } from '@/lib/dates';
 
@@ -30,6 +30,12 @@ const t = {
   date: 'Bill date',
   amount: 'Bill amount',
   amountPrefix: 'SR',
+  photo: 'Bill photo',
+  photoHint: 'Optional',
+  photoCapture: 'Take a photo of the bill',
+  photoChange: 'Retake or choose another',
+  photoTooLarge: 'That photo is over 10MB. Please take a smaller one.',
+  photoWrongType: 'That file must be a photo.',
   submit: 'Submit bill',
   sending: 'Sending...',
   successTitle: 'Bill recorded',
@@ -38,11 +44,23 @@ const t = {
   required: 'Please fill in every field.',
 };
 
+// Mirrors what the API accepts, so an oversized or wrong-typed file is caught on
+// the phone before a slow upload rather than after it. This public form is for
+// photographing a paper bill, so it is images only — the office's dashboard form
+// is where a PDF the API also accepts would come from.
+const MAX_PHOTO_SIZE = 10 * 1024 * 1024;
+const ACCEPTED_PHOTO_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/heic'];
+
 export default function BillForm({ branches, loadError }: Props) {
   const [branchId, setBranchId] = useState('');
   const [name, setName] = useState('');
   const [billDate, setBillDate] = useState('');
   const [amount, setAmount] = useState('');
+  const [photo, setPhoto] = useState<File | null>(null);
+  // An object URL for the chosen photo, so the manager can confirm they caught
+  // the whole bill before sending. Revoked whenever it is replaced or cleared.
+  const [photoPreview, setPhotoPreview] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Held in state for the same reason `billDate` is: this page is
   // force-dynamic, so the component renders on the server too. Calling
@@ -74,6 +92,44 @@ export default function BillForm({ branches, loadError }: Props) {
     setMaxDate(today);
   }, []);
 
+  // Free the preview's object URL when it is replaced or the form unmounts.
+  useEffect(() => {
+    return () => {
+      if (photoPreview) URL.revokeObjectURL(photoPreview);
+    };
+  }, [photoPreview]);
+
+  const clearPhoto = () => {
+    setPhoto(null);
+    setPhotoPreview(null); // the effect above revokes the previous URL
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+
+  const handlePhoto = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0] ?? null;
+    if (!file) return;
+
+    if (file.size > MAX_PHOTO_SIZE) {
+      setError(t.photoTooLarge);
+      clearPhoto();
+      return;
+    }
+
+    // Must be a named, supported image type. An empty type is rejected here too
+    // — the server rejects it, so accepting it on the phone would only surface
+    // as a failed submission after a slow upload rather than an instant, clear
+    // message while the camera is still open.
+    if (!ACCEPTED_PHOTO_TYPES.includes(file.type)) {
+      setError(t.photoWrongType);
+      clearPhoto();
+      return;
+    }
+
+    setError(null);
+    setPhoto(file);
+    setPhotoPreview(URL.createObjectURL(file));
+  };
+
   const grouped = (['makkah', 'jeddah'] as IceCity[])
     .map(city => ({ city, items: branches.filter(b => b.city === city) }))
     .filter(group => group.items.length > 0);
@@ -90,16 +146,17 @@ export default function BillForm({ branches, loadError }: Props) {
     setError(null);
 
     try {
-      const res = await fetch('/api/ice/bills', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          branch_id: branchId,
-          bill_date: billDate,
-          amount,
-          submitted_by_name: name.trim() || null,
-        }),
-      });
+      // Multipart rather than JSON so the optional photo rides along. The photo
+      // is only appended when there is one — a bill with no photo is a normal
+      // case, not a missing field.
+      const form = new FormData();
+      form.append('branch_id', branchId);
+      form.append('bill_date', billDate);
+      form.append('amount', amount);
+      if (name.trim()) form.append('submitted_by_name', name.trim());
+      if (photo) form.append('bill_photo', photo);
+
+      const res = await fetch('/api/ice/bills', { method: 'POST', body: form });
 
       const result = await res.json();
       if (!res.ok) throw new Error(result.error || 'Could not save the bill.');
@@ -114,6 +171,7 @@ export default function BillForm({ branches, loadError }: Props) {
 
       setSubmitted(result.bill);
       setAmount('');
+      clearPhoto();
       // Safe to read directly here: this runs from a click handler, long after
       // hydration, so there is no server render to disagree with.
       setBillDate(riyadhToday());
@@ -253,6 +311,66 @@ export default function BillForm({ branches, loadError }: Props) {
                   dir="ltr"
                 />
               </div>
+            </div>
+
+            <div className="space-y-2">
+              <label htmlFor="bill-photo" className="text-sm font-semibold text-gray-700 flex items-baseline gap-2">
+                {t.photo}
+                <span className="text-xs font-normal text-gray-400">{t.photoHint}</span>
+              </label>
+
+              {/* accept="image/*" with capture opens the camera straight away on
+                  a phone, which is what a store manager standing over the paper
+                  bill wants; the menu still lets them pick an existing photo. */}
+              <input
+                ref={fileInputRef}
+                id="bill-photo"
+                type="file"
+                accept="image/*"
+                capture="environment"
+                onChange={handlePhoto}
+                className="sr-only"
+              />
+
+              {photo ? (
+                <div className="flex items-center gap-3 p-3 rounded-xl border border-gray-200 bg-gray-50/50">
+                  {photoPreview ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={photoPreview} alt="" className="w-14 h-14 rounded-lg object-cover flex-shrink-0" />
+                  ) : (
+                    <div className="w-14 h-14 rounded-lg bg-gray-200 flex items-center justify-center flex-shrink-0">
+                      <Camera className="w-6 h-6 text-gray-400" />
+                    </div>
+                  )}
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-medium text-gray-900 truncate">{photo.name || 'Bill photo'}</p>
+                    <button
+                      type="button"
+                      onClick={() => fileInputRef.current?.click()}
+                      className="text-xs font-semibold text-emerald-700 hover:text-emerald-800"
+                    >
+                      {t.photoChange}
+                    </button>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={clearPhoto}
+                    aria-label="Remove photo"
+                    className="p-1.5 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-200 flex-shrink-0"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  className="w-full flex items-center justify-center gap-2 px-4 py-3.5 rounded-xl border-2 border-dashed border-gray-300 text-gray-600 hover:border-emerald-500 hover:text-emerald-700 hover:bg-emerald-50/30 transition-colors font-semibold text-sm"
+                >
+                  <Camera className="w-5 h-5" />
+                  {t.photoCapture}
+                </button>
+              )}
             </div>
 
             <button

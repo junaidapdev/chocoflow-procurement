@@ -9,6 +9,12 @@
 // so revoking access to one leaves the other untouched.
 export const ICE_RECEIPT_BUCKET = 'ice-receipts';
 
+// Private bucket for the bill photo a store manager attaches when filing a bill
+// from the public /bill link. Separate from ICE_RECEIPT_BUCKET so submitted
+// evidence and proof-of-payment never share a path, and access to one can be
+// revoked without touching the other.
+export const ICE_BILL_BUCKET = 'ice-bills';
+
 export const ICE_CITIES = ['makkah', 'jeddah'] as const;
 export type IceCity = (typeof ICE_CITIES)[number];
 
@@ -59,6 +65,10 @@ export type IceBill = {
   source: 'link' | 'manual';
   submitted_by_name: string | null;
   note: string | null;
+  // Storage path of the photo the branch attached, or null when none was. The
+  // bucket is private, so the dashboard views this through a signed URL rather
+  // than treating it as a link.
+  bill_photo_path: string | null;
   created_at: string;
 };
 
