@@ -15,34 +15,30 @@ type Props = { branches: IceBranch[]; loadError: boolean };
 
 type Submitted = { branch_name: string; bill_date: string; amount: number };
 
+// English-only. The Arabic side of this form (and its language toggle) was
+// removed on request; the internal dashboard and the chocolate side are
+// unaffected.
+const t = {
+  portal: 'ICE CREAM BILLS',
+  title: 'Record a Bill',
+  desc: 'Record the bill after the delivery arrives. Three fields, that is all.',
+  name: 'Your name',
+  nameHint: 'Asked once, then remembered',
+  namePlaceholder: 'e.g. Ahmed',
+  branch: 'Branch',
+  branchPlaceholder: 'Select branch...',
+  date: 'Bill date',
+  amount: 'Bill amount',
+  amountPrefix: 'SR',
+  submit: 'Submit bill',
+  sending: 'Sending...',
+  successTitle: 'Bill recorded',
+  another: 'Record another',
+  unavailable: 'Could not load branches. Please refresh the page.',
+  required: 'Please fill in every field.',
+};
+
 export default function BillForm({ branches, loadError }: Props) {
-  const [lang, setLang] = useState<'ar' | 'en'>('ar');
-  const isAr = lang === 'ar';
-
-  const t = {
-    portal: isAr ? 'فواتير الآيس كريم' : 'ICE CREAM BILLS',
-    title: isAr ? 'تسجيل فاتورة' : 'Record a Bill',
-    desc: isAr
-      ? 'سجّل الفاتورة بعد استلام الطلب. ثلاث خانات فقط.'
-      : 'Record the bill after the delivery arrives. Three fields, that is all.',
-    name: isAr ? 'اسمك' : 'Your name',
-    nameHint: isAr ? 'يُطلب مرة واحدة فقط' : 'Asked once, then remembered',
-    namePlaceholder: isAr ? 'مثال: أحمد' : 'e.g. Ahmed',
-    branch: isAr ? 'الفرع' : 'Branch',
-    branchPlaceholder: isAr ? 'اختر الفرع...' : 'Select branch...',
-    date: isAr ? 'تاريخ الفاتورة' : 'Bill date',
-    amount: isAr ? 'مبلغ الفاتورة' : 'Bill amount',
-    amountPrefix: isAr ? 'ر.س' : 'SR',
-    submit: isAr ? 'إرسال' : 'Submit bill',
-    sending: isAr ? 'جاري الإرسال...' : 'Sending...',
-    successTitle: isAr ? 'تم تسجيل الفاتورة' : 'Bill recorded',
-    another: isAr ? 'تسجيل فاتورة أخرى' : 'Record another',
-    unavailable: isAr
-      ? 'تعذّر تحميل الفروع. يرجى تحديث الصفحة.'
-      : 'Could not load branches. Please refresh the page.',
-    required: isAr ? 'يرجى تعبئة جميع الخانات.' : 'Please fill in every field.',
-  };
-
   const [branchId, setBranchId] = useState('');
   const [name, setName] = useState('');
   const [billDate, setBillDate] = useState('');
@@ -133,16 +129,13 @@ export default function BillForm({ branches, loadError }: Props) {
 
   if (submitted) {
     return (
-      <div
-        className="flex flex-col items-center justify-center py-12 px-8 space-y-6 text-center"
-        dir={isAr ? 'rtl' : 'ltr'}
-      >
+      <div className="flex flex-col items-center justify-center py-12 px-8 space-y-6 text-center">
         <div className="w-20 h-20 bg-green-100 rounded-full flex items-center justify-center">
           <CheckCircle2 className="w-10 h-10 text-green-600" />
         </div>
         <div className="space-y-3">
           <h3 className="text-2xl font-bold text-gray-900">{t.successTitle}</h3>
-          <div className="inline-flex flex-col gap-1 bg-gray-50 border border-gray-200 rounded-xl px-6 py-4" dir="ltr">
+          <div className="inline-flex flex-col gap-1 bg-gray-50 border border-gray-200 rounded-xl px-6 py-4">
             <span className="text-base font-bold text-gray-900">{submitted.branch_name}</span>
             <span className="text-sm text-gray-500">{formatPaymentDate(submitted.bill_date)}</span>
             <span className="text-xl font-black text-gray-900 tabular-nums">
@@ -162,24 +155,14 @@ export default function BillForm({ branches, loadError }: Props) {
 
   return (
     <div className="flex flex-col w-full">
-      <div
-        className="w-full bg-white border-b border-gray-100 py-4 px-6 flex justify-between items-center"
-        dir={isAr ? 'rtl' : 'ltr'}
-      >
+      <div className="w-full bg-white border-b border-gray-100 py-4 px-6 flex justify-between items-center">
         <p className="text-gray-500 text-sm font-bold tracking-widest uppercase flex items-center gap-2">
           <IceCream className="w-4 h-4" />
           {t.portal}
         </p>
-        <button
-          type="button"
-          onClick={() => setLang(isAr ? 'en' : 'ar')}
-          className="text-xs font-bold bg-gray-50 hover:bg-gray-100 text-gray-700 px-3 py-1.5 rounded-lg transition-colors border border-gray-200 outline-none"
-        >
-          {isAr ? 'EN' : 'عربي'}
-        </button>
       </div>
 
-      <div className="p-8" dir={isAr ? 'rtl' : 'ltr'}>
+      <div className="p-8">
         <div className="mb-8 text-center">
           <h2 className="text-2xl font-bold text-gray-900">{t.title}</h2>
           <p className="text-gray-500 text-sm mt-2 leading-relaxed">{t.desc}</p>
@@ -228,7 +211,7 @@ export default function BillForm({ branches, loadError }: Props) {
                   <optgroup key={group.city} label={ICE_CITY_LABELS[group.city]}>
                     {group.items.map(branch => (
                       <option key={branch.id} value={branch.id}>
-                        {isAr && branch.name_ar ? branch.name_ar : branch.name_en}
+                        {branch.name_en}
                       </option>
                     ))}
                   </optgroup>
