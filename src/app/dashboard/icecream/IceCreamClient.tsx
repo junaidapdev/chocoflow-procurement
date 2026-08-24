@@ -686,7 +686,10 @@ function AddBillForm({
         </label>
         <input
           type="file"
-          accept="image/*,application/pdf"
+          // The exact types /api/ice/bills accepts — not image/*, which would
+          // offer GIF/SVG the endpoint rejects, letting someone pick a file the
+          // form cannot submit.
+          accept="image/jpeg,image/png,image/webp,image/heic,application/pdf"
           onChange={e => setPhoto(e.target.files?.[0] ?? null)}
           className="w-full text-sm text-gray-600 file:mr-3 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-bold file:bg-gray-100 file:text-gray-700 hover:file:bg-gray-200"
         />

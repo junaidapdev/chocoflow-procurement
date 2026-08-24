@@ -35,7 +35,7 @@ const t = {
   photoCapture: 'Take a photo of the bill',
   photoChange: 'Retake or choose another',
   photoTooLarge: 'That photo is over 10MB. Please take a smaller one.',
-  photoWrongType: 'That file must be a photo (or a PDF).',
+  photoWrongType: 'That file must be a photo.',
   submit: 'Submit bill',
   sending: 'Sending...',
   successTitle: 'Bill recorded',
@@ -45,9 +45,11 @@ const t = {
 };
 
 // Mirrors what the API accepts, so an oversized or wrong-typed file is caught on
-// the phone before a slow upload rather than after it.
+// the phone before a slow upload rather than after it. This public form is for
+// photographing a paper bill, so it is images only — the office's dashboard form
+// is where a PDF the API also accepts would come from.
 const MAX_PHOTO_SIZE = 10 * 1024 * 1024;
-const ACCEPTED_PHOTO_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'application/pdf'];
+const ACCEPTED_PHOTO_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/heic'];
 
 export default function BillForm({ branches, loadError }: Props) {
   const [branchId, setBranchId] = useState('');
@@ -113,9 +115,11 @@ export default function BillForm({ branches, loadError }: Props) {
       return;
     }
 
-    // Some phones report an empty type for a HEIC straight off the camera; only
-    // reject a type the browser actually named and the server would refuse.
-    if (file.type && !ACCEPTED_PHOTO_TYPES.includes(file.type)) {
+    // Must be a named, supported image type. An empty type is rejected here too
+    // — the server rejects it, so accepting it on the phone would only surface
+    // as a failed submission after a slow upload rather than an instant, clear
+    // message while the camera is still open.
+    if (!ACCEPTED_PHOTO_TYPES.includes(file.type)) {
       setError(t.photoWrongType);
       clearPhoto();
       return;
@@ -123,8 +127,7 @@ export default function BillForm({ branches, loadError }: Props) {
 
     setError(null);
     setPhoto(file);
-    // A PDF has no inline thumbnail, so show its name instead of a broken image.
-    setPhotoPreview(file.type === 'application/pdf' ? null : URL.createObjectURL(file));
+    setPhotoPreview(URL.createObjectURL(file));
   };
 
   const grouped = (['makkah', 'jeddah'] as IceCity[])

@@ -158,9 +158,14 @@ BEGIN
         RETURN;
     END IF;
 
+    -- DO UPDATE, not DO NOTHING: a bill photo is submitted evidence and must
+    -- never be world-readable, so if a bucket of this id already exists — left
+    -- over from a test, or created public by hand — this forces it back to
+    -- private rather than trusting whatever it happened to be. DO NOTHING would
+    -- silently leave a pre-existing public bucket public.
     INSERT INTO storage.buckets (id, name, public)
     VALUES ('ice-bills', 'ice-bills', false)
-    ON CONFLICT (id) DO NOTHING;
+    ON CONFLICT (id) DO UPDATE SET public = false;
 
     DROP POLICY IF EXISTS "Ice members can read ice bills" ON storage.objects;
     CREATE POLICY "Ice members can read ice bills"
