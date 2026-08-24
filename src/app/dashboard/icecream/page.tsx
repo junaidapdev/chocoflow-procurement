@@ -42,7 +42,7 @@ export default async function IceCreamPage() {
     supabase
       .from('ice_bills')
       .select(
-        'id, branch_id, salesman_id, bill_date, amount, status, batch_id, source, submitted_by_name, note, created_at, ice_branches!inner(name_en, city, sort_order), ice_salesmen(name)'
+        'id, branch_id, salesman_id, bill_date, amount, status, batch_id, source, submitted_by_name, note, bill_photo_path, created_at, ice_branches!inner(name_en, city, sort_order), ice_salesmen(name)'
       )
       .eq('status', 'pending')
       .order('bill_date', { ascending: true }),
