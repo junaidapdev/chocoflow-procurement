@@ -385,7 +385,7 @@ export default function ApproveClient({ initialInvoices }: { initialInvoices: In
                   <th className="px-6 py-4">Type</th>
                   <th className="px-6 py-4">Vendor</th>
                   <th className="px-6 py-4">Brand/Branch</th>
-                  <th className="px-6 py-4">Ref #</th>
+                  <th className="px-6 py-4">Invoice Info</th>
                   <th className="px-6 py-4">Amount (SAR)</th>
                   <th className="px-6 py-4">{activeFilter === 'Paid' ? 'Paid' : 'Status Updated'}</th>
                   <th className="px-6 py-4 text-center">Action</th>
@@ -424,6 +424,11 @@ export default function ApproveClient({ initialInvoices }: { initialInvoices: In
                           <FileText className="w-3.5 h-3.5 mr-1" />
                           {inv.invoice_number}
                         </button>
+                        {/* The date on the vendor's invoice - fixed, unlike the
+                            Status Updated column, which moves on every write. */}
+                        <div className="text-gray-500 text-xs mt-0.5">
+                          {format(new Date(inv.invoice_date), 'MMM dd, yyyy')}
+                        </div>
                       </td>
                       <td className={`px-6 py-4 font-bold ${isReturn ? 'text-rose-700' : 'text-gray-900'}`}>
                         {isReturn && <span className="mr-0.5 opacity-70">−</span>}
@@ -529,6 +534,7 @@ export default function ApproveClient({ initialInvoices }: { initialInvoices: In
                     <button onClick={() => openSecureDocument(inv.invoice_url, 'invoices')} className={`flex items-center ${isReturn ? 'text-rose-600' : 'text-indigo-600'}`}>
                       <FileText className="w-3 h-3 mr-1" />{inv.invoice_number}
                     </button>
+                    <span>{format(new Date(inv.invoice_date), 'MMM dd, yyyy')}</span>
                     {activeFilter === 'Paid' ? (
                       <span>
                         Paid {formatPaymentDate(inv.payment_date)} · {getBankAccountLabel(inv.bank_account)}
