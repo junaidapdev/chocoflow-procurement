@@ -2,9 +2,9 @@
 
 import { useState, useMemo } from 'react';
 import { format } from 'date-fns';
-import { CheckSquare, Square, FileText, CheckCircle2, TrendingUp, Filter, Loader2, MessageSquareX, RotateCcw } from 'lucide-react';
+import { CheckSquare, Square, FileText, CheckCircle2, TrendingUp, Filter, Loader2, MessageSquareX, RotateCcw, Search } from 'lucide-react';
 import { openSecureDocument } from '@/lib/storage';
-import { getBankAccountLabel } from '@/lib/constants';
+import { getBankAccountLabel, getBrandEnglishName } from '@/lib/constants';
 import { formatPaymentDate } from '@/lib/dates';
 
 type Invoice = {
@@ -43,12 +43,30 @@ const TypeCell = ({ type }: { type?: string }) => {
 const signedAmount = (inv: { type?: string; amount: number }) =>
   (inv.type === 'return' ? -1 : 1) * Number(inv.amount);
 
+// Brand totals are sums of floats, so a brand whose returns exactly cancel its
+// invoices can land on 1e-13 rather than 0 - which would render as "0.00" but
+// fail an `=== 0` check and get styled as a live amount. Round to halalas once
+// and use that value for both the display and the zero/negative styling.
+const toHalalas = (n: number) => Math.round(n * 100) / 100;
+
+// Negatives are shown with a real minus sign (U+2212), matching how return
+// bills are rendered in the invoice list.
+const formatSigned = (n: number) => {
+  const v = toHalalas(n);
+  const body = Math.abs(v).toLocaleString(undefined, {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+  return v < 0 ? `−${body}` : body;
+};
+
 export default function ApproveClient({ initialInvoices }: { initialInvoices: Invoice[] }) {
   const [invoices, setInvoices] = useState<Invoice[]>(initialInvoices);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [isProcessing, setIsProcessing] = useState(false);
   const [reopeningId, setReopeningId] = useState<string | null>(null);
   const [activeFilter, setActiveFilter] = useState<string>('Verified'); // Stats bar filter
+  const [brandQuery, setBrandQuery] = useState('');
 
 
   // Derived state
@@ -63,17 +81,25 @@ export default function ApproveClient({ initialInvoices }: { initialInvoices: In
   // bucket — so an Approved return reduces the Approved total, not Verified.
   // Outstanding = everything that hasn't been physically paid yet, which
   // includes ReadyToPay (accountant has authorized, payer hasn't transferred).
+  //
+  // Pending is reported alongside but deliberately NOT folded into
+  // `outstanding`: nobody has checked those invoices yet, so the amount can
+  // still change or be rejected outright. Counting unverified vendor
+  // submissions as money the company owes would overstate the figure the
+  // manager plans against.
   const totalsByStatus = useMemo(() => {
     const sumStatus = (status: string) =>
       invoices
         .filter(inv => inv.status === status)
         .reduce((sum, inv) => sum + signedAmount(inv), 0);
 
+    const pending = sumStatus('Pending');
     const verified = sumStatus('Verified');
     const approved = sumStatus('Approved');
     const readyToPay = sumStatus('ReadyToPay');
     const paid = sumStatus('Paid');
     return {
+      pending,
       verified,
       approved,
       readyToPay,
@@ -84,36 +110,81 @@ export default function ApproveClient({ initialInvoices }: { initialInvoices: In
 
   const totalOutstanding = totalsByStatus.outstanding;
 
-  // Per-brand outstanding breakdown. Includes Verified, Approved, and
-  // ReadyToPay so the totals here line up with the Total Outstanding card.
-  // Each brand also carries per-status sub-totals for the stacked bar.
+  // Per-brand breakdown across all four stages, mirroring the Total
+  // Outstanding card above but split by brand.
+  //
+  // `outstanding` deliberately excludes Paid: that money has already left the
+  // bank, so folding it in would make every settled brand look like a debt.
+  // Paid is carried alongside as all-time history instead.
+  //
+  // Pending is carried per brand too, and stays out of `outstanding` for the
+  // same reason it stays out of the company total above.
+  //
+  // `count` counts every open invoice, Pending included - those are real work
+  // still in the pipeline even though their amounts aren't committed yet. A
+  // brand with nothing open but a payment history still gets a card: every
+  // stage reads 0.00 and it sorts to the bottom.
   const brandSummary = useMemo(() => {
     type BrandStats = {
       count: number;
-      total: number;
+      outstanding: number;
+      pending: number;
       verified: number;
       approved: number;
       readyToPay: number;
+      paid: number;
     };
     const summary: Record<string, BrandStats> = {};
 
     invoices
-      .filter(inv => ['Verified', 'Approved', 'ReadyToPay'].includes(inv.status))
+      .filter(inv => ['Pending', 'Verified', 'Approved', 'ReadyToPay', 'Paid'].includes(inv.status))
       .forEach(inv => {
         if (!summary[inv.brand_name]) {
-          summary[inv.brand_name] = { count: 0, total: 0, verified: 0, approved: 0, readyToPay: 0 };
+          summary[inv.brand_name] = {
+            count: 0, outstanding: 0, pending: 0, verified: 0, approved: 0, readyToPay: 0, paid: 0,
+          };
         }
         const amt = signedAmount(inv);
         const s = summary[inv.brand_name];
+
+        if (inv.status === 'Paid') {
+          s.paid += amt;
+          return;
+        }
+
         s.count += 1;
-        s.total += amt;
+
+        if (inv.status === 'Pending') {
+          s.pending += amt;
+          return;
+        }
+
+        s.outstanding += amt;
         if (inv.status === 'Verified') s.verified += amt;
         else if (inv.status === 'Approved') s.approved += amt;
         else if (inv.status === 'ReadyToPay') s.readyToPay += amt;
       });
 
-    return Object.entries(summary).sort((a, b) => b[1].total - a[1].total);
+    // Most owed first. Fully settled brands all tie on 0 outstanding, so they
+    // fall back to largest payment history rather than an arbitrary order.
+    return Object.entries(summary).sort(
+      (a, b) => b[1].outstanding - a[1].outstanding || b[1].paid - a[1].paid,
+    );
   }, [invoices]);
+
+  // Every brand with any invoice history, shown the same way - no split
+  // between brands that owe money and brands that don't. The manager sees
+  // what is actually there and decides for themselves what matters; a brand
+  // sitting at zero is information too. The search box narrows the list when
+  // they want one brand rather than all of them.
+  const visibleBrands = useMemo(() => {
+    const q = brandQuery.trim().toLowerCase();
+    if (!q) return brandSummary;
+
+    return brandSummary.filter(([brand]) =>
+      brand.toLowerCase().includes(q) ||
+      (getBrandEnglishName(brand) || '').toLowerCase().includes(q));
+  }, [brandSummary, brandQuery]);
 
   // Queue to display
   const queueToDisplay = invoices.filter(inv => inv.status === activeFilter);
@@ -472,7 +543,7 @@ export default function ApproveClient({ initialInvoices }: { initialInvoices: In
         </div>
 
         {/* Section 2: Financial Summary (Takes up 1 col on lg) */}
-        <div className="space-y-6">
+        <div className="space-y-6 lg:sticky lg:top-8">
           <div className="bg-gradient-to-br from-gray-900 to-gray-800 rounded-xl shadow-lg p-6 text-white border border-gray-700">
             <h3 className="text-gray-400 text-sm font-semibold tracking-wider uppercase mb-2">Total Outstanding</h3>
             <div className="flex items-baseline space-x-2">
@@ -487,6 +558,17 @@ export default function ApproveClient({ initialInvoices }: { initialInvoices: In
 
             {/* Breakdown by status */}
             <div className="mt-5 pt-5 border-t border-gray-700/70 space-y-2.5">
+              <div className="flex items-center justify-between text-sm pb-2 mb-1 border-b border-gray-700/40">
+                <span className="flex items-center text-yellow-300">
+                  <span className="w-2 h-2 rounded-full bg-yellow-400 mr-2" />
+                  Pending
+                  <span className="text-gray-500 text-[10px] ml-1.5 normal-case">(not verified)</span>
+                </span>
+                <span className="font-semibold tabular-nums text-yellow-200">
+                  {totalsByStatus.pending.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                  <span className="text-gray-500 text-xs ml-1">SAR</span>
+                </span>
+              </div>
               <div className="flex items-center justify-between text-sm">
                 <span className="flex items-center text-blue-300">
                   <span className="w-2 h-2 rounded-full bg-blue-400 mr-2" />
@@ -535,65 +617,101 @@ export default function ApproveClient({ initialInvoices }: { initialInvoices: In
           <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
             <div className="border-b border-gray-100 px-5 py-4 bg-gray-50/50">
               <h3 className="font-bold text-gray-900">Brand Breakdown</h3>
-              <p className="text-xs text-gray-500">Outstanding by brand · highest first</p>
+              <p className="text-xs text-gray-500">
+                {visibleBrands.length} brand{visibleBrands.length !== 1 ? 's' : ''}
+                <span className="text-gray-400"> · most owed first</span>
+              </p>
+
+              <div className="relative mt-3">
+                <Search className="w-3.5 h-3.5 text-gray-400 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                <input
+                  type="search"
+                  value={brandQuery}
+                  onChange={e => setBrandQuery(e.target.value)}
+                  placeholder="Search brand…"
+                  aria-label="Search brands"
+                  className="w-full bg-white border border-gray-200 rounded-lg pl-8 pr-3 py-1.5 text-xs text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/30 focus:border-indigo-400"
+                />
+              </div>
             </div>
-            <div className="divide-y divide-gray-100">
-              {brandSummary.length === 0 ? (
+            <div className="divide-y divide-gray-100 lg:max-h-[calc(100vh-27rem)] lg:min-h-[14rem] lg:overflow-y-auto">
+              {visibleBrands.length === 0 && (
                 <div className="px-5 py-10 text-center text-gray-400 text-sm">
-                  No outstanding invoices
+                  {brandQuery.trim() ? 'No brand matches that search' : 'No invoices yet'}
                 </div>
-              ) : (
-                brandSummary.map(([brand, stats]) => {
-                  // Only show status lines that actually have money in them.
-                  const lines: { label: string; amount: number; color: string }[] = [];
-                  if (stats.verified > 0)   lines.push({ label: 'Awaiting approval',  amount: stats.verified,   color: 'text-blue-700' });
-                  if (stats.approved > 0)   lines.push({ label: 'Awaiting authorization', amount: stats.approved, color: 'text-indigo-700' });
-                  if (stats.readyToPay > 0) lines.push({ label: 'With payer',         amount: stats.readyToPay, color: 'text-amber-700' });
+              )}
+
+              {visibleBrands.map(([brand, stats]) => {
+                  const englishName = getBrandEnglishName(brand);
+
+                  // All four stages, always rendered - including the zero and
+                  // negative ones. A negative means the brand's return credits
+                  // outweigh its invoices at that stage, which is exactly what
+                  // the manager needs to see rather than have omitted.
+                  const rows = [
+                    { label: 'Pending',      note: 'not verified', amount: toHalalas(stats.pending),  color: 'text-yellow-700' },
+                    { label: 'Verified',     note: null,         amount: toHalalas(stats.verified),   color: 'text-blue-700' },
+                    { label: 'Approved',     note: null,         amount: toHalalas(stats.approved),   color: 'text-indigo-700' },
+                    { label: 'Ready to Pay', note: 'with payer', amount: toHalalas(stats.readyToPay), color: 'text-amber-700' },
+                    { label: 'Paid',         note: 'settled',    amount: toHalalas(stats.paid),       color: 'text-emerald-700' },
+                  ];
 
                   return (
-                    <div key={brand} className="px-5 py-3 hover:bg-gray-50/50 transition-colors">
-                      {/* Brand name + headline total */}
+                    <div key={brand} className="px-5 py-4 hover:bg-gray-50/50 transition-colors">
+                      {/* Brand name, with the English transliteration where we have one */}
                       <div className="flex items-baseline justify-between gap-3">
                         <h4 className="font-semibold text-gray-900 text-sm truncate" title={brand}>
                           {brand}
                         </h4>
-                        <div className="shrink-0 text-right">
-                          <span className="font-bold text-gray-900 text-base tabular-nums">
-                            {stats.total.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                        {englishName && (
+                          <span className="shrink-0 text-[11px] text-gray-400 font-medium truncate">
+                            {englishName}
                           </span>
-                          <span className="text-gray-400 text-[11px] font-medium ml-1">SAR</span>
-                        </div>
+                        )}
                       </div>
 
-                      {/* Single-status brands: count + status on ONE line.
-                          Multi-status brands: count on its own line, then per-status breakdown. */}
-                      {lines.length === 1 ? (
-                        <p className="text-[11px] text-gray-500 mt-0.5">
-                          {stats.count} invoice{stats.count !== 1 ? 's' : ''}
-                          <span className="text-gray-400"> · </span>
-                          <span className={`${lines[0].color} font-medium`}>{lines[0].label}</span>
-                        </p>
-                      ) : (
-                        <>
-                          <p className="text-[11px] text-gray-500 mt-0.5 mb-1.5">
-                            {stats.count} invoice{stats.count !== 1 ? 's' : ''}
-                          </p>
-                          <div className="space-y-1 pl-3 border-l-2 border-gray-100">
-                            {lines.map(line => (
-                              <div key={line.label} className="flex items-center justify-between text-xs">
-                                <span className={`${line.color} font-medium`}>{line.label}</span>
-                                <span className="text-gray-700 tabular-nums">
-                                  {line.amount.toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                                </span>
-                              </div>
-                            ))}
-                          </div>
-                        </>
-                      )}
+                      <p className="text-[11px] text-gray-500 mt-0.5">
+                        {stats.count} open invoice{stats.count !== 1 ? 's' : ''}
+                      </p>
+
+                      <div className="mt-2 space-y-1">
+                        {rows.map(row => {
+                          const isZero = row.amount === 0;
+                          return (
+                            <div key={row.label} className="flex items-baseline justify-between text-xs gap-2">
+                              <span className={isZero ? 'text-gray-400' : `${row.color} font-medium`}>
+                                {row.label}
+                                {row.note && (
+                                  <span className="text-gray-400 font-normal ml-1">({row.note})</span>
+                                )}
+                              </span>
+                              <span
+                                className={`tabular-nums shrink-0 ${
+                                  isZero
+                                    ? 'text-gray-400'
+                                    : row.amount < 0
+                                      ? 'text-rose-700 font-medium'
+                                      : 'text-gray-700'
+                                }`}
+                              >
+                                {formatSigned(row.amount)}
+                              </span>
+                            </div>
+                          );
+                        })}
+                      </div>
+
+                      {/* Paid is excluded from this total on purpose - that money has already left. */}
+                      <div className="flex items-baseline justify-between gap-2 mt-2 pt-2 border-t border-gray-100">
+                        <span className="text-xs font-semibold text-gray-900">Still owed</span>
+                        <span className="shrink-0 font-bold text-gray-900 text-sm tabular-nums">
+                          {formatSigned(stats.outstanding)}
+                          <span className="text-gray-400 text-[11px] font-medium ml-1">SAR</span>
+                        </span>
+                      </div>
                     </div>
                   );
-                })
-              )}
+                })}
             </div>
           </div>
         </div>
