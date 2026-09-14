@@ -124,9 +124,16 @@ export default function ApproveClient({ initialInvoices }: { initialInvoices: In
   // still in the pipeline even though their amounts aren't committed yet. A
   // brand with nothing open but a payment history still gets a card: every
   // stage reads 0.00 and it sorts to the bottom.
+  //
+  // Rejected is counted, never summed. A rejected invoice is money the company
+  // will not pay, so it belongs in none of the five stages and in no total -
+  // but a brand whose submissions were all rejected would otherwise vanish from
+  // a panel that is supposed to show every brand. The count is what tells the
+  // manager to go look.
   const brandSummary = useMemo(() => {
     type BrandStats = {
       count: number;
+      rejected: number;
       outstanding: number;
       pending: number;
       verified: number;
@@ -137,11 +144,12 @@ export default function ApproveClient({ initialInvoices }: { initialInvoices: In
     const summary: Record<string, BrandStats> = {};
 
     invoices
-      .filter(inv => ['Pending', 'Verified', 'Approved', 'ReadyToPay', 'Paid'].includes(inv.status))
+      .filter(inv => ['Pending', 'Verified', 'Approved', 'ReadyToPay', 'Paid', 'Rejected'].includes(inv.status))
       .forEach(inv => {
         if (!summary[inv.brand_name]) {
           summary[inv.brand_name] = {
-            count: 0, outstanding: 0, pending: 0, verified: 0, approved: 0, readyToPay: 0, paid: 0,
+            count: 0, rejected: 0, outstanding: 0, pending: 0,
+            verified: 0, approved: 0, readyToPay: 0, paid: 0,
           };
         }
         const amt = signedAmount(inv);
@@ -149,6 +157,11 @@ export default function ApproveClient({ initialInvoices }: { initialInvoices: In
 
         if (inv.status === 'Paid') {
           s.paid += amt;
+          return;
+        }
+
+        if (inv.status === 'Rejected') {
+          s.rejected += 1;
           return;
         }
 
@@ -634,7 +647,7 @@ export default function ApproveClient({ initialInvoices }: { initialInvoices: In
                 />
               </div>
             </div>
-            <div className="divide-y divide-gray-100 lg:max-h-[calc(100vh-27rem)] lg:min-h-[14rem] lg:overflow-y-auto">
+            <div className="divide-y divide-gray-100 max-h-[60vh] overflow-y-auto overscroll-contain lg:max-h-[calc(100vh-27rem)] lg:min-h-[14rem]">
               {visibleBrands.length === 0 && (
                 <div className="px-5 py-10 text-center text-gray-400 text-sm">
                   {brandQuery.trim() ? 'No brand matches that search' : 'No invoices yet'}
@@ -672,6 +685,11 @@ export default function ApproveClient({ initialInvoices }: { initialInvoices: In
 
                       <p className="text-[11px] text-gray-500 mt-0.5">
                         {stats.count} open invoice{stats.count !== 1 ? 's' : ''}
+                        {stats.rejected > 0 && (
+                          <span className="text-red-600 font-medium">
+                            {' · '}{stats.rejected} rejected
+                          </span>
+                        )}
                       </p>
 
                       <div className="mt-2 space-y-1">
