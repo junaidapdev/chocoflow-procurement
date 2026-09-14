@@ -11,6 +11,11 @@
 --
 --     Going    Quraish · Haramain · Obhur
 --
+-- SUPERSEDED IN PART: 20260907_icecream_add_obhur.sql brings Obhur back, so
+-- the current Jeddah list is ten branches, not nine. Do not re-run this file
+-- after that one — section 4 would retire Obhur again and section 5 would warn
+-- about the count. It is history; the later file is the current word.
+--
 -- Chocolate keeps its own list in src/lib/constants.ts (BRANCHES) and is not
 -- touched here — that separation is the whole reason the ice cream branches
 -- were seeded into a table of their own rather than shared.
@@ -26,7 +31,7 @@
 -- three dead rows around. The block below decides per branch.
 --
 -- Idempotent: safe to run twice, and safe on a database that has not been
--- seeded yet.
+-- seeded yet — but see the SUPERSEDED note above before re-running it at all.
 -- ─────────────────────────────────────────────────────────────────────────────
 
 
