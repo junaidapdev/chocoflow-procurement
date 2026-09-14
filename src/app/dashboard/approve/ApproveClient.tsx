@@ -81,17 +81,25 @@ export default function ApproveClient({ initialInvoices }: { initialInvoices: In
   // bucket — so an Approved return reduces the Approved total, not Verified.
   // Outstanding = everything that hasn't been physically paid yet, which
   // includes ReadyToPay (accountant has authorized, payer hasn't transferred).
+  //
+  // Pending is reported alongside but deliberately NOT folded into
+  // `outstanding`: nobody has checked those invoices yet, so the amount can
+  // still change or be rejected outright. Counting unverified vendor
+  // submissions as money the company owes would overstate the figure the
+  // manager plans against.
   const totalsByStatus = useMemo(() => {
     const sumStatus = (status: string) =>
       invoices
         .filter(inv => inv.status === status)
         .reduce((sum, inv) => sum + signedAmount(inv), 0);
 
+    const pending = sumStatus('Pending');
     const verified = sumStatus('Verified');
     const approved = sumStatus('Approved');
     const readyToPay = sumStatus('ReadyToPay');
     const paid = sumStatus('Paid');
     return {
+      pending,
       verified,
       approved,
       readyToPay,
@@ -109,13 +117,18 @@ export default function ApproveClient({ initialInvoices }: { initialInvoices: In
   // bank, so folding it in would make every settled brand look like a debt.
   // Paid is carried alongside as all-time history instead.
   //
-  // `count` counts only open invoices (Verified/Approved/ReadyToPay). A brand
-  // with nothing open but a payment history still gets a card - every stage
-  // reads 0.00 and it sorts to the bottom.
+  // Pending is carried per brand too, and stays out of `outstanding` for the
+  // same reason it stays out of the company total above.
+  //
+  // `count` counts every open invoice, Pending included - those are real work
+  // still in the pipeline even though their amounts aren't committed yet. A
+  // brand with nothing open but a payment history still gets a card: every
+  // stage reads 0.00 and it sorts to the bottom.
   const brandSummary = useMemo(() => {
     type BrandStats = {
       count: number;
       outstanding: number;
+      pending: number;
       verified: number;
       approved: number;
       readyToPay: number;
@@ -124,11 +137,11 @@ export default function ApproveClient({ initialInvoices }: { initialInvoices: In
     const summary: Record<string, BrandStats> = {};
 
     invoices
-      .filter(inv => ['Verified', 'Approved', 'ReadyToPay', 'Paid'].includes(inv.status))
+      .filter(inv => ['Pending', 'Verified', 'Approved', 'ReadyToPay', 'Paid'].includes(inv.status))
       .forEach(inv => {
         if (!summary[inv.brand_name]) {
           summary[inv.brand_name] = {
-            count: 0, outstanding: 0, verified: 0, approved: 0, readyToPay: 0, paid: 0,
+            count: 0, outstanding: 0, pending: 0, verified: 0, approved: 0, readyToPay: 0, paid: 0,
           };
         }
         const amt = signedAmount(inv);
@@ -140,6 +153,12 @@ export default function ApproveClient({ initialInvoices }: { initialInvoices: In
         }
 
         s.count += 1;
+
+        if (inv.status === 'Pending') {
+          s.pending += amt;
+          return;
+        }
+
         s.outstanding += amt;
         if (inv.status === 'Verified') s.verified += amt;
         else if (inv.status === 'Approved') s.approved += amt;
@@ -539,6 +558,17 @@ export default function ApproveClient({ initialInvoices }: { initialInvoices: In
 
             {/* Breakdown by status */}
             <div className="mt-5 pt-5 border-t border-gray-700/70 space-y-2.5">
+              <div className="flex items-center justify-between text-sm pb-2 mb-1 border-b border-gray-700/40">
+                <span className="flex items-center text-yellow-300">
+                  <span className="w-2 h-2 rounded-full bg-yellow-400 mr-2" />
+                  Pending
+                  <span className="text-gray-500 text-[10px] ml-1.5 normal-case">(not verified)</span>
+                </span>
+                <span className="font-semibold tabular-nums text-yellow-200">
+                  {totalsByStatus.pending.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                  <span className="text-gray-500 text-xs ml-1">SAR</span>
+                </span>
+              </div>
               <div className="flex items-center justify-between text-sm">
                 <span className="flex items-center text-blue-300">
                   <span className="w-2 h-2 rounded-full bg-blue-400 mr-2" />
@@ -619,6 +649,7 @@ export default function ApproveClient({ initialInvoices }: { initialInvoices: In
                   // outweigh its invoices at that stage, which is exactly what
                   // the manager needs to see rather than have omitted.
                   const rows = [
+                    { label: 'Pending',      note: 'not verified', amount: toHalalas(stats.pending),  color: 'text-yellow-700' },
                     { label: 'Verified',     note: null,         amount: toHalalas(stats.verified),   color: 'text-blue-700' },
                     { label: 'Approved',     note: null,         amount: toHalalas(stats.approved),   color: 'text-indigo-700' },
                     { label: 'Ready to Pay', note: 'with payer', amount: toHalalas(stats.readyToPay), color: 'text-amber-700' },
