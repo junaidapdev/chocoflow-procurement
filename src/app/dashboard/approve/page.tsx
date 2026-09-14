@@ -4,10 +4,17 @@ import ApproveClient from './ApproveClient';
 export default async function DashboardApprovePage() {
   const supabase = createClient();
 
+  // Oldest invoice first, by the date on the vendor's paper rather than by
+  // when it was uploaded. An invoice sent in three months late is three months
+  // old: ordering by created_at would file it behind everything submitted this
+  // week, which is exactly how old bills end up unpaid. created_at breaks ties
+  // so the order is stable for invoices sharing a date.
   const { data: invoices, error } = await supabase
     .from('invoices')
     .select('*')
-    .order('created_at', { ascending: false });
+    .order('invoice_date', { ascending: true })
+    .order('created_at', { ascending: true })
+    .order('id', { ascending: true });
 
   if (error) {
     console.error('Error fetching invoices:', error);
