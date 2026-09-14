@@ -7,11 +7,17 @@ export default async function DashboardPaymentsPage() {
   // Payer queue + history.
   //   ReadyToPay → accountant has authorized; transfer money + upload receipt
   //   Paid       → completed
+  // Oldest invoice first, by the date on the vendor's paper rather than by
+  // when it was uploaded. An invoice sent in three months late is three months
+  // old: ordering by created_at would file it behind everything submitted this
+  // week, which is exactly how old bills end up unpaid. created_at breaks ties
+  // so the order is stable for invoices sharing a date.
   const { data: invoices, error } = await supabase
     .from('invoices')
     .select('*')
     .eq('type', 'invoice')
     .in('status', ['ReadyToPay', 'Paid'])
+    .order('invoice_date', { ascending: true })
     .order('created_at', { ascending: true });
 
   if (error) {
