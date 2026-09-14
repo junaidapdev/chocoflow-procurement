@@ -67,6 +67,7 @@ export default function ApproveClient({ initialInvoices }: { initialInvoices: In
   const [reopeningId, setReopeningId] = useState<string | null>(null);
   const [activeFilter, setActiveFilter] = useState<string>('Verified'); // Stats bar filter
   const [brandQuery, setBrandQuery] = useState('');
+  const [queueQuery, setQueueQuery] = useState('');
 
 
   // Derived state
@@ -199,10 +200,25 @@ export default function ApproveClient({ initialInvoices }: { initialInvoices: In
       (getBrandEnglishName(brand) || '').toLowerCase().includes(q));
   }, [brandSummary, brandQuery]);
 
-  // Queue to display
-  const queueToDisplay = invoices.filter(inv => inv.status === activeFilter);
+  // Queue to display: the active status, narrowed by the brand search.
+  // Matches the Arabic name or its English transliteration, so the manager can
+  // type either.
+  const queueToDisplay = useMemo(() => {
+    const inStatus = invoices.filter(inv => inv.status === activeFilter);
+    const q = queueQuery.trim().toLowerCase();
+    if (!q) return inStatus;
+
+    return inStatus.filter(inv =>
+      inv.brand_name.toLowerCase().includes(q) ||
+      (getBrandEnglishName(inv.brand_name) || '').toLowerCase().includes(q));
+  }, [invoices, activeFilter, queueQuery]);
+
   // Friendly label for headings (DB uses "ReadyToPay", users read "Ready to Pay")
   const filterLabel = activeFilter === 'ReadyToPay' ? 'Ready to Pay' : activeFilter;
+
+  const emptyQueueMessage = queueQuery.trim()
+    ? `No ${filterLabel} invoices match “${queueQuery.trim()}”.`
+    : `No invoices currently in the ${filterLabel} state.`;
   const isAllSelected = queueToDisplay.length > 0 && queueToDisplay.every(inv => selectedIds.has(inv.id));
 
   const toggleSelect = (id: string) => {
@@ -310,7 +326,7 @@ export default function ApproveClient({ initialInvoices }: { initialInvoices: In
         ].map(stat => (
           <button
             key={stat.value}
-            onClick={() => setActiveFilter(stat.value)}
+            onClick={() => { setActiveFilter(stat.value); setSelectedIds(new Set()); }}
             className={`flex flex-col items-start p-4 rounded-xl border transition-all ${stat.color} ${activeFilter === stat.value ? 'ring-2 ring-offset-1 ring-gray-900 shadow-sm' : 'opacity-80 hover:opacity-100 hover:shadow-sm'}`}
           >
             <span className="text-sm font-semibold opacity-80 uppercase tracking-wider">{stat.label}</span>
@@ -328,16 +344,30 @@ export default function ApproveClient({ initialInvoices }: { initialInvoices: In
               <Filter className="w-5 h-5 mr-2 text-gray-400" />
               Showing {filterLabel} Queue
             </h2>
-            {activeFilter === 'Verified' && selectedIds.size > 0 && (
-              <button
-                disabled={isProcessing}
-                onClick={() => handleApprove(Array.from(selectedIds))}
-                className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg font-semibold text-sm transition-colors shadow-sm disabled:opacity-50 flex items-center justify-center w-full sm:w-auto"
-              >
-                {isProcessing ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <CheckCircle2 className="w-4 h-4 mr-2" />}
-                Approve Selected ({selectedIds.size})
-              </button>
-            )}
+            <div className="flex flex-col sm:flex-row gap-3 sm:items-center">
+              <div className="relative">
+                <Search className="w-4 h-4 text-gray-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                <input
+                  type="search"
+                  value={queueQuery}
+                  onChange={e => { setQueueQuery(e.target.value); setSelectedIds(new Set()); }}
+                  placeholder="Search brand…"
+                  aria-label={`Search ${filterLabel} invoices by brand`}
+                  className="w-full sm:w-56 bg-white border border-gray-200 rounded-lg pl-9 pr-3 py-2 text-sm text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/30 focus:border-indigo-400"
+                />
+              </div>
+
+              {activeFilter === 'Verified' && selectedIds.size > 0 && (
+                <button
+                  disabled={isProcessing}
+                  onClick={() => handleApprove(Array.from(selectedIds))}
+                  className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg font-semibold text-sm transition-colors shadow-sm disabled:opacity-50 flex items-center justify-center w-full sm:w-auto"
+                >
+                  {isProcessing ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <CheckCircle2 className="w-4 h-4 mr-2" />}
+                  Approve Selected ({selectedIds.size})
+                </button>
+              )}
+            </div>
           </div>
 
           {/* Desktop Table */}
@@ -364,8 +394,8 @@ export default function ApproveClient({ initialInvoices }: { initialInvoices: In
               <tbody className="divide-y divide-gray-100">
                 {queueToDisplay.length === 0 ? (
                   <tr>
-                    <td colSpan={7} className="px-6 py-12 text-center text-gray-500">
-                      No invoices currently in the {filterLabel} state.
+                    <td colSpan={8} className="px-6 py-12 text-center text-gray-500">
+                      {emptyQueueMessage}
                     </td>
                   </tr>
                 ) : (
@@ -463,7 +493,7 @@ export default function ApproveClient({ initialInvoices }: { initialInvoices: In
           <div className="lg:hidden divide-y divide-gray-100">
             {queueToDisplay.length === 0 ? (
               <div className="px-4 py-12 text-center text-gray-500">
-                No invoices currently in the {filterLabel} state.
+                {emptyQueueMessage}
               </div>
             ) : (
               queueToDisplay.map((inv) => {
