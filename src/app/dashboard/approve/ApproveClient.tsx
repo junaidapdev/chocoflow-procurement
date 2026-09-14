@@ -326,7 +326,12 @@ export default function ApproveClient({ initialInvoices }: { initialInvoices: In
         ].map(stat => (
           <button
             key={stat.value}
-            onClick={() => { setActiveFilter(stat.value); setSelectedIds(new Set()); }}
+            onClick={() => {
+              setActiveFilter(stat.value);
+              // Both the ticks and the search belong to the queue being left.
+              setSelectedIds(new Set());
+              setQueueQuery('');
+            }}
             className={`flex flex-col items-start p-4 rounded-xl border transition-all ${stat.color} ${activeFilter === stat.value ? 'ring-2 ring-offset-1 ring-gray-900 shadow-sm' : 'opacity-80 hover:opacity-100 hover:shadow-sm'}`}
           >
             <span className="text-sm font-semibold opacity-80 uppercase tracking-wider">{stat.label}</span>
@@ -394,7 +399,7 @@ export default function ApproveClient({ initialInvoices }: { initialInvoices: In
               <tbody className="divide-y divide-gray-100">
                 {queueToDisplay.length === 0 ? (
                   <tr>
-                    <td colSpan={8} className="px-6 py-12 text-center text-gray-500">
+                    <td colSpan={activeFilter === 'Verified' ? 8 : 7} className="px-6 py-12 text-center text-gray-500">
                       {emptyQueueMessage}
                     </td>
                   </tr>

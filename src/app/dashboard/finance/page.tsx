@@ -19,7 +19,8 @@ export default async function DashboardFinancePage() {
     .eq('type', 'invoice')
     .in('status', ['Approved', 'ReadyToPay', 'Paid'])
     .order('invoice_date', { ascending: true })
-    .order('created_at', { ascending: true });
+    .order('created_at', { ascending: true })
+    .order('id', { ascending: true });
 
   if (error) {
     console.error('Error fetching invoices:', error);
