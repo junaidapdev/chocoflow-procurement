@@ -543,9 +543,9 @@ function SheetTable({
           ))}
         </div>
 
-        {/* Salesman summary. One row per branch assignment, not per salesman —
-            a salesman covering two branches appears twice, exactly as in the
-            sheet accounts already receives. */}
+        {/* Salesman summary. One row per salesman — a salesman covering two
+            branches gets one row with both totals added, branches listed
+            underneath. */}
         <aside className="w-full sm:w-[13rem] sm:shrink-0">
           <div className="flex items-baseline justify-between border-b-2 border-gray-900 pb-1">
             <span className="text-[10px] font-bold uppercase tracking-wider">Salesman</span>
