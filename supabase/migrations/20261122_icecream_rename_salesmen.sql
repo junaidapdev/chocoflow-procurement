@@ -47,8 +47,8 @@ BEGIN
          WHERE s.name IN ('Mohamed Saleem', 'Abdul Jaleel')
          ORDER BY s.name, b.sort_order
     LOOP
-        RAISE NOTICE '  %  %%', rpad(r.salesman, 16), r.branch,
-            CASE WHEN r.active THEN '' ELSE '  (inactive branch)' END;
+        RAISE NOTICE '  %  %', rpad(r.salesman, 16),
+            r.branch || CASE WHEN r.active THEN '' ELSE '  (inactive branch)' END;
     END LOOP;
 
     IF EXISTS (SELECT 1 FROM public.ice_salesmen
