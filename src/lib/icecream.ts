@@ -117,9 +117,8 @@ export const formatAmount = (amount: number): string =>
 // ── Sheet shape ────────────────────────────────────────────────────────────
 // Mirrors the Excel the manager sends today: a block per branch listing its
 // bills and a branch total, then a summary down the side. The summary has one
-// row per *branch assignment*, not per salesman — a salesman covering two
-// branches appears twice, exactly as in the source sheet, so the person in
-// accounts reading it recognises the layout.
+// row per *salesman* — a salesman covering two branches gets a single row with
+// both branches' totals added together, and the branch names listed under it.
 
 export type IceSheetBranchBlock = {
   branchId: string;
@@ -248,15 +247,39 @@ function totalsFor(
 
   return {
     blocks,
-    summary: blocks.map(block => ({
-      salesmanName: block.salesmanName,
-      branchName: block.branchName,
-      total: block.total,
-    })),
+    summary: summarise(blocks),
     grandTotal: sumAmounts(blocks.map(block => block.total)),
     periodStart: dates[0] || null,
     periodEnd: dates[dates.length - 1] || null,
   };
+}
+
+// One summary row per salesman: a salesman covering two branches gets a single
+// row whose total adds both blocks, with the branches listed under the name.
+// Rows keep the order of each salesman's first block, so the summary still
+// reads top to bottom alongside the table. The table itself is untouched — it
+// stays one block per branch.
+function summarise(blocks: IceSheetBranchBlock[]): IceSheetSummaryRow[] {
+  const rows = new Map<string, { branchNames: string[]; halalas: number }>();
+
+  for (const block of blocks) {
+    const row = rows.get(block.salesmanName);
+    if (row) {
+      if (!row.branchNames.includes(block.branchName)) row.branchNames.push(block.branchName);
+      row.halalas += toHalalas(block.total);
+    } else {
+      rows.set(block.salesmanName, {
+        branchNames: [block.branchName],
+        halalas: toHalalas(block.total),
+      });
+    }
+  }
+
+  return Array.from(rows.entries()).map(([salesmanName, row]) => ({
+    salesmanName,
+    branchName: row.branchNames.join(' · '),
+    total: row.halalas / 100,
+  }));
 }
 
 /**
