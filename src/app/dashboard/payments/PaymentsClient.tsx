@@ -1,14 +1,30 @@
 'use client';
 
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { format } from 'date-fns';
 import { openSecureDocument } from '@/lib/storage';
 import {
   Check, X, FileText, UploadCloud, CreditCard, Loader2,
   ArrowUpRight, Download, Building2, ChevronDown, ChevronRight,
+  Eye, Hourglass,
 } from 'lucide-react';
-import { BANK_ACCOUNTS, getBankAccountLabel, getBrandEnglishName } from '@/lib/constants';
-import { formatPaymentDate, riyadhToday, validatePaymentDate } from '@/lib/dates';
+import { BANK_ACCOUNTS, BRANCHES, getBankAccountLabel, getBrandEnglishName } from '@/lib/constants';
+import { formatPaymentDate, riyadhDateOf, riyadhToday, validatePaymentDate } from '@/lib/dates';
+import {
+  DEFAULT_FILTERS,
+  applyFilters,
+  distinctValues,
+  hasActiveFilters,
+  type InvoiceFilters,
+} from '@/lib/invoice-filters';
+import PaymentsFilterBar from './PaymentsFilterBar';
+
+type Tab = 'Pending' | 'To Pay' | 'Credits' | 'History';
+
+const formatEntryDate = (createdAt: string) => {
+  const d = new Date(createdAt);
+  return Number.isNaN(d.getTime()) ? '—' : format(d, 'MMM dd, yyyy');
+};
 
 type Invoice = {
   id: string;
@@ -46,7 +62,12 @@ export default function PaymentsClient({
 }) {
   const [invoices, setInvoices] = useState<Invoice[]>(initialInvoices);
   const [availableReturns, setAvailableReturns] = useState<Invoice[]>(initialReturns);
-  const [activeTab, setActiveTab] = useState<'To Pay' | 'Credits' | 'History'>('To Pay');
+  const [activeTab, setActiveTab] = useState<Tab>('To Pay');
+
+  // One set of filters shared by every tab, so switching tabs keeps the same
+  // vendor / brand / branch / date range in view.
+  const [filters, setFilters] = useState<InvoiceFilters>(DEFAULT_FILTERS);
+  const filtering = hasActiveFilters(filters);
 
   // Selection across all vendor groups
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -67,16 +88,55 @@ export default function PaymentsClient({
   const [bankAccount, setBankAccount] = useState('');
   const [formError, setFormError] = useState('');
 
-  // Derived: pending vs paid
+  // Derived: by pipeline stage.
+  //   Approved   → approved by Salam, waiting on the accountant to authorize.
+  //                Shown to the payer read-only, so they can see what's coming.
+  //   ReadyToPay → authorized; the payer's actual queue.
+  //   Paid       → history.
+  const pendingInvoices = useMemo(() => invoices.filter(i => i.status === 'Approved'), [invoices]);
   const toPayInvoices = useMemo(() => invoices.filter(i => i.status === 'ReadyToPay'), [invoices]);
   const paidInvoices = useMemo(() => invoices.filter(i => i.status === 'Paid'), [invoices]);
+
+  // The same filters applied to each tab's rows.
+  const filteredPending = useMemo(() => applyFilters(pendingInvoices, filters), [pendingInvoices, filters]);
+  const filteredToPay = useMemo(() => applyFilters(toPayInvoices, filters), [toPayInvoices, filters]);
+  const filteredReturns = useMemo(() => applyFilters(availableReturns, filters), [availableReturns, filters]);
+  const filteredPaid = useMemo(() => applyFilters(paidInvoices, filters), [paidInvoices, filters]);
+
+  // Dropdown options come from every row on the page, not just the active
+  // tab, so picking a vendor and then switching tabs never leaves the
+  // dropdown showing a value it doesn't list.
+  const filterOptions = useMemo(() => {
+    const all = [...invoices, ...availableReturns];
+    const dataBranches = distinctValues(all, 'branch_id');
+    return {
+      vendors: distinctValues(all, 'vendor_name'),
+      brands: distinctValues(all, 'brand_name'),
+      branches: [...BRANCHES, ...dataBranches.filter(b => !BRANCHES.includes(b))],
+    };
+  }, [invoices, availableReturns]);
+
+  // A filter must never leave an invoice selected that the payer can no
+  // longer see — otherwise "Pay Selected" would pay bills hidden off-screen.
+  useEffect(() => {
+    const visible = new Set(filteredToPay.map(i => i.id));
+    setSelectedIds(prev => {
+      const next = new Set(Array.from(prev).filter(id => visible.has(id)));
+      return next.size === prev.size ? prev : next;
+    });
+  }, [filteredToPay]);
 
   // Group the To Pay list by vendor + brand.
   // One vendor can theoretically ship under multiple brands; we key by both
   // so credits (brand-scoped) apply cleanly.
+  //
+  // Groups appear in the order of their first invoice under the chosen sort
+  // (a Map keeps insertion order), and invoices inside each group keep that
+  // sort too. With the default sort that puts the vendor owed the oldest bill
+  // at the top.
   const vendorGroups: VendorGroup[] = useMemo(() => {
     const map = new Map<string, VendorGroup>();
-    for (const inv of toPayInvoices) {
+    for (const inv of filteredToPay) {
       const key = `${inv.vendor_name || 'Unknown'}||${inv.brand_name || 'Unknown'}`;
       if (!map.has(key)) {
         map.set(key, {
@@ -91,13 +151,14 @@ export default function PaymentsClient({
       g.invoices.push(inv);
       g.total += Number(inv.amount);
     }
-    return Array.from(map.values()).sort((a, b) => a.vendorName.localeCompare(b.vendorName));
-  }, [toPayInvoices]);
+    return Array.from(map.values());
+  }, [filteredToPay]);
 
-  // Selected invoices as concrete objects
+  // Selected invoices as concrete objects — drawn from the visible rows only,
+  // for the same reason as the pruning effect above.
   const selectedInvoices = useMemo(
-    () => toPayInvoices.filter(i => selectedIds.has(i.id)),
-    [toPayInvoices, selectedIds]
+    () => filteredToPay.filter(i => selectedIds.has(i.id)),
+    [filteredToPay, selectedIds]
   );
 
   const selectedTotal = useMemo(
@@ -126,7 +187,12 @@ export default function PaymentsClient({
   const netPayable = Math.max(0, selectedTotal - totalReturnCredit);
   const creditExceedsTotal = totalReturnCredit > selectedTotal;
 
-  // Banner totals
+  // Banner totals — always the whole queue, never the filtered view, so the
+  // headline figure can't be misread as everything owed.
+  const totalVendorGroups = useMemo(
+    () => new Set(toPayInvoices.map(i => `${i.vendor_name || 'Unknown'}||${i.brand_name || 'Unknown'}`)).size,
+    [toPayInvoices]
+  );
   const totalInvoicesOutstanding = useMemo(
     () => toPayInvoices.reduce((sum, inv) => sum + Number(inv.amount), 0),
     [toPayInvoices]
@@ -178,18 +244,20 @@ export default function PaymentsClient({
   };
 
 
+  // Exports the Paid History exactly as filtered and sorted on screen.
   const exportToCsv = () => {
-    if (paidInvoices.length === 0) {
-      alert('No paid invoices to export.');
+    if (filteredPaid.length === 0) {
+      alert(filtering ? 'No paid invoices match the current filters.' : 'No paid invoices to export.');
       return;
     }
-    const headers = ['Invoice Number', 'Vendor Name', 'Brand Name', 'Branch', 'Amount (SAR)', 'Invoice Date', 'Paid Date', 'Bank Account', 'Receipt URL'];
-    const rows = paidInvoices.map(inv => [
+    const headers = ['Invoice Number', 'Vendor Name', 'Brand Name', 'Branch', 'Amount (SAR)', 'Entry Date', 'Invoice Date', 'Paid Date', 'Bank Account', 'Receipt URL'];
+    const rows = filteredPaid.map(inv => [
       inv.invoice_number,
       inv.vendor_name,
       inv.brand_name,
       inv.branch_id,
       inv.amount.toFixed(2),
+      riyadhDateOf(inv.created_at),
       format(new Date(inv.invoice_date), 'yyyy-MM-dd'),
       // The recorded transfer date — not updated_at, which any later write bumps.
       inv.payment_date || '',
@@ -212,7 +280,7 @@ export default function PaymentsClient({
   };
 
   const openPayModal = () => {
-    if (selectedIds.size === 0) return;
+    if (selectedInvoices.length === 0) return;
     setReceiptFile(null);
     setFileError('');
     setFormError('');
@@ -327,7 +395,7 @@ export default function PaymentsClient({
               <span className="text-gray-500 font-semibold text-sm">SAR</span>
             </div>
             <span className="text-xs text-gray-400">
-              {toPayInvoices.length} invoice{toPayInvoices.length !== 1 ? 's' : ''} across {vendorGroups.length} vendor{vendorGroups.length !== 1 ? 's' : ''}
+              {toPayInvoices.length} invoice{toPayInvoices.length !== 1 ? 's' : ''} across {totalVendorGroups} vendor{totalVendorGroups !== 1 ? 's' : ''}
             </span>
           </div>
         </div>
@@ -354,10 +422,10 @@ export default function PaymentsClient({
           <button
             onClick={exportToCsv}
             className="inline-flex items-center gap-2 px-4 py-2.5 bg-gray-900 hover:bg-gray-800 text-white text-sm font-semibold rounded-xl transition-colors shadow-sm whitespace-nowrap"
-            title="Export all paid invoices as CSV"
+            title={filtering ? 'Export paid invoices matching the current filters as CSV' : 'Export all paid invoices as CSV'}
           >
             <Download className="w-4 h-4" />
-            Export CSV
+            {filtering ? `Export CSV (${filteredPaid.length})` : 'Export CSV'}
           </button>
         </div>
       </div>
@@ -365,45 +433,140 @@ export default function PaymentsClient({
       {/* Main container */}
       <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
         {/* Tabs */}
+        {/* Tabs are in pipeline order. Badges count the rows each tab shows
+            under the current filters, so the payer can see at a glance which
+            tabs hold matches. */}
         <div className="flex border-b border-gray-200 px-4 bg-gray-50/80 overflow-x-auto">
-          <button
-            onClick={() => setActiveTab('To Pay')}
-            className={`px-6 py-4 text-sm font-semibold flex items-center border-b-2 transition-colors whitespace-nowrap ${activeTab === 'To Pay' ? 'border-emerald-500 text-emerald-700 bg-white' : 'border-transparent text-gray-500 hover:text-gray-700 hover:bg-gray-50'}`}
-          >
-            Authorized (To Pay)
-            {toPayInvoices.length > 0 && (
-              <span className="ml-2 bg-emerald-100 text-emerald-800 py-0.5 px-2.5 rounded-full text-xs">
-                {toPayInvoices.length}
-              </span>
-            )}
-          </button>
-          <button
-            onClick={() => setActiveTab('Credits')}
-            className={`px-6 py-4 text-sm font-semibold flex items-center border-b-2 transition-colors whitespace-nowrap ${activeTab === 'Credits' ? 'border-rose-500 text-rose-700 bg-white' : 'border-transparent text-gray-500 hover:text-gray-700 hover:bg-gray-50'}`}
-          >
-            Return Credits
-            {availableReturns.length > 0 && (
-              <span className="ml-2 bg-rose-100 text-rose-700 py-0.5 px-2.5 rounded-full text-xs">
-                {availableReturns.length}
-              </span>
-            )}
-          </button>
-          <button
-            onClick={() => setActiveTab('History')}
-            className={`px-6 py-4 text-sm font-semibold flex items-center border-b-2 transition-colors whitespace-nowrap ${activeTab === 'History' ? 'border-gray-900 text-gray-900 bg-white' : 'border-transparent text-gray-500 hover:text-gray-700 hover:bg-gray-50'}`}
-          >
-            Paid History
-          </button>
+          {([
+            { tab: 'Pending', label: 'Pending Authorization', count: filteredPending.length, active: 'border-sky-500 text-sky-700 bg-white', badge: 'bg-sky-100 text-sky-800', icon: <Eye className="w-3.5 h-3.5 mr-1.5 opacity-70" /> },
+            { tab: 'To Pay', label: 'Authorized (To Pay)', count: filteredToPay.length, active: 'border-emerald-500 text-emerald-700 bg-white', badge: 'bg-emerald-100 text-emerald-800', icon: null },
+            { tab: 'Credits', label: 'Return Credits', count: filteredReturns.length, active: 'border-rose-500 text-rose-700 bg-white', badge: 'bg-rose-100 text-rose-700', icon: null },
+            { tab: 'History', label: 'Paid History', count: filteredPaid.length, active: 'border-gray-900 text-gray-900 bg-white', badge: 'bg-gray-200 text-gray-700', icon: null },
+          ] as const).map(t => (
+            <button
+              key={t.tab}
+              onClick={() => setActiveTab(t.tab)}
+              className={`px-6 py-4 text-sm font-semibold flex items-center border-b-2 transition-colors whitespace-nowrap ${activeTab === t.tab ? t.active : 'border-transparent text-gray-500 hover:text-gray-700 hover:bg-gray-50'}`}
+            >
+              {t.icon}
+              {t.label}
+              {/* History has no badge unless filtering — its unfiltered count
+                  only grows and says nothing useful. */}
+              {t.count > 0 && (t.tab !== 'History' || filtering) && (
+                <span className={`ml-2 py-0.5 px-2.5 rounded-full text-xs ${t.badge}`}>
+                  {t.count}
+                </span>
+              )}
+            </button>
+          ))}
         </div>
+
+        <PaymentsFilterBar
+          filters={filters}
+          onChange={setFilters}
+          vendors={filterOptions.vendors}
+          brands={filterOptions.brands}
+          branches={filterOptions.branches}
+          {...({
+            Pending: { shownCount: filteredPending.length, totalCount: pendingInvoices.length, noun: 'pending bills' },
+            'To Pay': { shownCount: filteredToPay.length, totalCount: toPayInvoices.length, noun: 'authorized invoices' },
+            Credits: { shownCount: filteredReturns.length, totalCount: availableReturns.length, noun: 'return credits' },
+            History: { shownCount: filteredPaid.length, totalCount: paidInvoices.length, noun: 'paid invoices' },
+          } as const)[activeTab]}
+        />
+
+        {/* ── Pending Authorization Tab: read-only ── */}
+        {activeTab === 'Pending' && (
+          <>
+            <div className="px-6 py-3 bg-sky-50/70 border-b border-sky-100 text-xs text-sky-800 flex items-start gap-2">
+              <Eye className="w-4 h-4 shrink-0 mt-px" />
+              <span>
+                <span className="font-semibold">Read-only.</span>{' '}
+                These bills are approved and waiting for the accountant to authorize payment. They move to
+                Authorized (To Pay) once authorized — until then they can&rsquo;t be selected or paid.
+              </span>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-sm whitespace-nowrap">
+                <thead className="bg-white text-gray-500 font-medium border-b border-gray-100 uppercase text-xs tracking-wider">
+                  <tr>
+                    <th className="px-6 py-4">Vendor</th>
+                    <th className="px-6 py-4">Brand / Branch</th>
+                    <th className="px-6 py-4">Invoice Info</th>
+                    <th className="px-6 py-4">Entered</th>
+                    <th className="px-6 py-4 text-right">Amount (SAR)</th>
+                    <th className="px-6 py-4 text-center">Status</th>
+                    <th className="px-6 py-4 text-center">Invoice</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  {filteredPending.length === 0 ? (
+                    <tr>
+                      <td colSpan={7}>
+                        <EmptyState
+                          filtering={filtering}
+                          message="No bills are waiting for authorization."
+                          onClear={() => setFilters(DEFAULT_FILTERS)}
+                        />
+                      </td>
+                    </tr>
+                  ) : (
+                    filteredPending.map(inv => (
+                      <tr key={inv.id} className="hover:bg-gray-50">
+                        <td className="px-6 py-4">
+                          <div className="font-semibold text-gray-900">{inv.vendor_name}</div>
+                        </td>
+                        <td className="px-6 py-4 text-gray-800">
+                          <span className="font-medium mr-2">{inv.brand_name}</span>
+                          {getBrandEnglishName(inv.brand_name) && (
+                            <span className="text-xs text-gray-500 mr-2">({getBrandEnglishName(inv.brand_name)})</span>
+                          )}
+                          <span className="text-xs text-gray-400">· {inv.branch_id}</span>
+                        </td>
+                        <td className="px-6 py-4">
+                          <div className="font-mono text-gray-900 text-xs">#{inv.invoice_number}</div>
+                          <div className="text-gray-500 text-xs mt-0.5">{format(new Date(inv.invoice_date), 'MMM dd, yyyy')}</div>
+                        </td>
+                        <td className="px-6 py-4 text-xs text-gray-600">{formatEntryDate(inv.created_at)}</td>
+                        <td className="px-6 py-4 text-right font-bold text-gray-900">
+                          {Number(inv.amount).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                        </td>
+                        <td className="px-6 py-4 text-center">
+                          <span className="inline-flex items-center gap-1 text-xs font-semibold text-sky-700 bg-sky-50 px-2.5 py-1 rounded-md border border-sky-100">
+                            <Hourglass className="w-3 h-3" /> Awaiting authorization
+                          </span>
+                        </td>
+                        <td className="px-6 py-4 text-center">
+                          {inv.invoice_url && (
+                            <button
+                              onClick={() => openSecureDocument(inv.invoice_url, 'invoices')}
+                              className="text-xs text-sky-700 hover:text-sky-900 font-medium inline-flex items-center"
+                            >
+                              <FileText className="w-3.5 h-3.5 mr-1" /> View PDF
+                            </button>
+                          )}
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
 
         {/* ── To Pay Tab: vendor-grouped with checkboxes ── */}
         {activeTab === 'To Pay' && (
           <div className="divide-y divide-gray-100">
             {vendorGroups.length === 0 ? (
-              <div className="px-6 py-16 text-center text-gray-400">
-                <CreditCard className="w-8 h-8 text-gray-300 mb-2 mx-auto" />
-                <p>No invoices awaiting payment.</p>
-              </div>
+              filtering ? (
+                <EmptyState filtering message="" onClear={() => setFilters(DEFAULT_FILTERS)} />
+              ) : (
+                <div className="px-6 py-16 text-center text-gray-400">
+                  <CreditCard className="w-8 h-8 text-gray-300 mb-2 mx-auto" />
+                  <p>No invoices awaiting payment.</p>
+                </div>
+              )
             ) : (
               vendorGroups.map((group) => {
                 const allSelected = group.invoices.every(i => selectedIds.has(i.id));
@@ -481,6 +644,7 @@ export default function PaymentsClient({
                                 <div className="min-w-0">
                                   <div className="font-mono text-xs text-gray-900 truncate">#{inv.invoice_number}</div>
                                   <div className="text-[11px] text-gray-500 truncate">{format(new Date(inv.invoice_date), 'MMM dd, yyyy')}</div>
+                                  <div className="text-[10px] text-gray-400 truncate">Entered {formatEntryDate(inv.created_at)}</div>
                                 </div>
                                 <div className="text-xs text-gray-700 truncate">
                                   <span className="text-gray-400">Branch:</span> {inv.branch_id}
@@ -522,7 +686,7 @@ export default function PaymentsClient({
               <span className="font-semibold">How credits work:</span>{' '}
               When you select invoices for payment, any approved return credits for the same brand will appear in the payment modal for you to apply.
             </div>
-            <div className="overflow-x-auto hidden lg:block">
+            <div className="overflow-x-auto">
               <table className="w-full text-left text-sm whitespace-nowrap">
                 <thead className="bg-white text-gray-500 font-medium border-b border-gray-100 uppercase text-xs tracking-wider">
                   <tr>
@@ -535,12 +699,18 @@ export default function PaymentsClient({
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
-                  {availableReturns.length === 0 ? (
+                  {filteredReturns.length === 0 ? (
                     <tr>
-                      <td colSpan={6} className="px-6 py-16 text-center text-gray-400">No return credits available.</td>
+                      <td colSpan={6}>
+                        <EmptyState
+                          filtering={filtering}
+                          message="No return credits available."
+                          onClear={() => setFilters(DEFAULT_FILTERS)}
+                        />
+                      </td>
                     </tr>
                   ) : (
-                    availableReturns.map((r) => (
+                    filteredReturns.map((r) => (
                       <tr key={r.id} className="bg-rose-50/30 hover:bg-rose-50/60">
                         <td className="px-6 py-4 font-semibold text-gray-900">{r.vendor_name}</td>
                         <td className="px-6 py-4 text-gray-800">
@@ -548,7 +718,10 @@ export default function PaymentsClient({
                           <span className="text-xs text-gray-400">({r.branch_id})</span>
                         </td>
                         <td className="px-6 py-4 font-mono text-xs text-rose-700">{r.invoice_number}</td>
-                        <td className="px-6 py-4 text-gray-600">{format(new Date(r.invoice_date), 'MMM dd, yyyy')}</td>
+                        <td className="px-6 py-4 text-gray-600">
+                          <div>{format(new Date(r.invoice_date), 'MMM dd, yyyy')}</div>
+                          <div className="text-[11px] text-gray-400 mt-0.5">Entered {formatEntryDate(r.created_at)}</div>
+                        </td>
                         <td className="px-6 py-4 text-right font-bold text-rose-700">
                           −{Number(r.amount).toLocaleString(undefined, { minimumFractionDigits: 2 })}
                         </td>
@@ -587,14 +760,18 @@ export default function PaymentsClient({
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
-                {paidInvoices.length === 0 ? (
+                {filteredPaid.length === 0 ? (
                   <tr>
-                    <td colSpan={7} className="px-6 py-16 text-center text-gray-400">
-                      No paid invoices yet.
+                    <td colSpan={7}>
+                      <EmptyState
+                        filtering={filtering}
+                        message="No paid invoices yet."
+                        onClear={() => setFilters(DEFAULT_FILTERS)}
+                      />
                     </td>
                   </tr>
                 ) : (
-                  paidInvoices.map((inv) => (
+                  filteredPaid.map((inv) => (
                     <tr key={inv.id} className="hover:bg-gray-50">
                       <td className="px-6 py-4">
                         <div className="font-semibold text-gray-900">{inv.vendor_name}</div>
@@ -607,6 +784,7 @@ export default function PaymentsClient({
                       <td className="px-6 py-4">
                         <div className="font-mono text-gray-900 text-xs">#{inv.invoice_number}</div>
                         <div className="text-gray-500 text-xs mt-0.5">{format(new Date(inv.invoice_date), 'MMM dd, yyyy')}</div>
+                        <div className="text-gray-400 text-[11px] mt-0.5">Entered {formatEntryDate(inv.created_at)}</div>
                       </td>
                       <td className="px-6 py-4 text-right font-bold text-gray-900">
                         {inv.amount.toLocaleString(undefined, { minimumFractionDigits: 2 })}
@@ -646,12 +824,12 @@ export default function PaymentsClient({
       </div>
 
       {/* Sticky selection bar — only on To Pay when something is selected */}
-      {activeTab === 'To Pay' && selectedIds.size > 0 && (
+      {activeTab === 'To Pay' && selectedInvoices.length > 0 && (
         <div className="fixed bottom-0 left-0 right-0 lg:left-[240px] z-40 bg-neutral-900 text-white shadow-2xl border-t border-neutral-800">
           <div className="max-w-7xl mx-auto px-4 lg:px-8 py-3 flex items-center justify-between gap-4">
             <div className="flex items-center gap-4 min-w-0">
               <span className="text-sm font-semibold">
-                {selectedIds.size} invoice{selectedIds.size !== 1 ? 's' : ''} selected
+                {selectedInvoices.length} invoice{selectedInvoices.length !== 1 ? 's' : ''} selected
               </span>
               <span className="hidden sm:inline text-gray-400">·</span>
               <span className="text-lg font-black tracking-tight">
@@ -920,6 +1098,35 @@ export default function PaymentsClient({
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+// Shown in place of a tab's rows when it has none. When filters are on, says
+// so and offers to clear them — an empty tab under a filter should never be
+// mistaken for an empty queue.
+function EmptyState({
+  filtering,
+  message,
+  onClear,
+}: {
+  filtering: boolean;
+  message: string;
+  onClear: () => void;
+}) {
+  if (!filtering) {
+    return <div className="px-6 py-16 text-center text-gray-400">{message}</div>;
+  }
+  return (
+    <div className="px-6 py-16 text-center text-gray-500 space-y-3">
+      <p>Nothing here matches the current filters.</p>
+      <button
+        type="button"
+        onClick={onClear}
+        className="inline-flex items-center px-4 py-2 rounded-lg text-sm font-semibold text-rose-600 bg-rose-50 hover:bg-rose-100 transition-colors"
+      >
+        Clear filters
+      </button>
     </div>
   );
 }
