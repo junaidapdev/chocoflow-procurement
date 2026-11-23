@@ -26,6 +26,22 @@ export function riyadhToday(): string {
   }).format(new Date());
 }
 
+// The Riyadh calendar day (YYYY-MM-DD) a timestamp falls on. Used to compare
+// a timestamptz such as created_at against a date picked in a filter: an
+// invoice entered at 1am Riyadh time belongs to that Riyadh day, not to the
+// previous UTC one. Returns '' for a missing or unparseable value.
+export function riyadhDateOf(timestamp: string | null | undefined): string {
+  if (!timestamp) return '';
+  const parsed = new Date(timestamp);
+  if (Number.isNaN(parsed.getTime())) return '';
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: RIYADH_TIME_ZONE,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(parsed);
+}
+
 export function isValidDateString(value: unknown): value is string {
   if (typeof value !== 'string' || !DATE_PATTERN.test(value)) return false;
 

@@ -5,6 +5,10 @@ export default async function DashboardPaymentsPage() {
   const supabase = createClient();
 
   // Payer queue + history.
+  //   Approved   → approved, still waiting on the accountant to authorize.
+  //                Read-only for the payer: shown so they can see what's
+  //                coming, but nothing on this page can act on it, and the
+  //                receipts API only accepts ReadyToPay invoices anyway.
   //   ReadyToPay → accountant has authorized; transfer money + upload receipt
   //   Paid       → completed
   // Oldest invoice first, by the date on the vendor's paper rather than by
@@ -16,7 +20,7 @@ export default async function DashboardPaymentsPage() {
     .from('invoices')
     .select('*')
     .eq('type', 'invoice')
-    .in('status', ['ReadyToPay', 'Paid'])
+    .in('status', ['Approved', 'ReadyToPay', 'Paid'])
     .order('invoice_date', { ascending: true })
     .order('created_at', { ascending: true })
     .order('id', { ascending: true });
